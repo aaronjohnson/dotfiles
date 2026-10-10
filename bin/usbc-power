@@ -20,7 +20,9 @@ report() {
       echo "$p: laptop is powering a device ($(cat "$port/power_operation_mode" 2>/dev/null))"
       continue
     fi
-    echo "$p: charger connected, USB PD $(cat "$partner/usb_power_delivery_revision" 2>/dev/null)"
+    rev=$(cat "$partner/usb_power_delivery_revision" 2>/dev/null)
+    # The kernel reports 0.0 when the PD revision is not known.
+    echo "$p: charger connected$( [ -n "$rev" ] && [ "$rev" != 0.0 ] && echo ", USB PD $rev")"
     # The charger's offers (Power Data Objects), if it speaks USB PD.
     pd=$(readlink -f "$partner/usb_power_delivery" 2>/dev/null)
     if [ -d "$pd/source-capabilities" ]; then
