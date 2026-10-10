@@ -225,6 +225,54 @@ ShellRoot {
     property bool ciFailed: false        // systemd marks it failed (checked while it is down)
     property real ciJobSecs: -1          // age of the running job; -1 = idle
 
+    // While a job runs, the workflow writes its current step and, during the
+    // build, "<package> <done> <total>" into a status directory that is
+    // removed when the job ends. Read on the same tick, only during a job.
+    property string ciStatusDir: "/run/github-runner/nixos-intel-npu/ci-status/"
+    property string ciStep: ""
+    property string ciPkg: ""            // package being built; "" = no progress info
+    property real ciDone: 0
+    property real ciTotal: 0
+    property var ciRate: []              // [time s, done] for the current package, last ~5 min
+    property real ciEtaSecs: -1          // -1 = not enough data yet
+
+    FileView { id: ciStepView; blockLoading: true; printErrors: false; path: root.ciStatusDir + "step" }
+    FileView { id: ciProgressView; blockLoading: true; printErrors: false; path: root.ciStatusDir + "progress" }
+
+    function readCiStatus() {
+        ciStepView.reload();
+        root.ciStep = ciStepView.text().trim();
+        ciProgressView.reload();
+        var f = ciProgressView.text().trim().split(/\s+/);
+        var done = Number(f[1]), total = Number(f[2]);
+        if (f.length !== 3 || !(total > 0) || isNaN(done)) { clearCiProgress(); return; }
+        // A new package, or its count going backwards, starts the rate afresh.
+        var now = Date.now() / 1000, rate = root.ciRate;
+        if (f[0] !== root.ciPkg || (rate.length && done < rate[rate.length - 1][1])) rate = [];
+        rate = rate.concat([[now, done]]).filter(function (r) { return r[0] >= now - 300; });
+        root.ciPkg = f[0];
+        root.ciDone = done;
+        root.ciTotal = total;
+        root.ciRate = rate;
+        // ETA from the build rate over the last ~5 minutes, once a minute of
+        // samples shows progress.
+        var span = rate[rate.length - 1][0] - rate[0][0], gained = rate[rate.length - 1][1] - rate[0][1];
+        root.ciEtaSecs = span >= 60 && gained > 0 ? (total - done) / (gained / span) : -1;
+    }
+
+    function clearCiProgress() {
+        root.ciPkg = "";
+        root.ciDone = 0;
+        root.ciTotal = 0;
+        root.ciRate = [];
+        root.ciEtaSecs = -1;
+    }
+
+    // "npu-compiler-llvm" -> "LLVM", "intel-npu-compiler" -> "compiler"
+    function ciPkgLabel(pkg) {
+        return pkg.indexOf("llvm") >= 0 ? "LLVM" : pkg.indexOf("compiler") >= 0 ? "compiler" : pkg;
+    }
+
     FileView { id: ciUnitView; blockLoading: true; printErrors: false; path: root.ciUnitFile }
     FileView { id: ciEvents; blockLoading: true; printErrors: false; path: root.ciCgroup + "cgroup.events" }
     FileView { id: ciProcs; blockLoading: true; printErrors: false; path: root.ciCgroup + "cgroup.procs" }
@@ -250,7 +298,7 @@ ShellRoot {
         if (!root.ciInstalled) root.ciFailed = false;
         ciEvents.reload();
         root.ciActive = root.ciInstalled && /populated 1/.test(ciEvents.text());
-        if (!root.ciActive) { root.ciPids = []; root.ciJobSecs = -1; return; }
+        if (!root.ciActive) { root.ciPids = []; root.ciJobSecs = -1; root.ciStep = ""; clearCiProgress(); return; }
         root.ciFailed = false;
         ciProcs.reload();
         var pids = ciProcs.text().trim().split("\n").filter(function (x) { return x !== ""; });
@@ -265,9 +313,10 @@ ShellRoot {
             var fields = st.substring(st.lastIndexOf(")") + 2).split(" ");
             started = Number(fields[19]) / 100;
         }
-        if (started < 0) { root.ciJobSecs = -1; return; }
+        if (started < 0) { root.ciJobSecs = -1; root.ciStep = ""; clearCiProgress(); return; }
         uptimeFile.reload();
         root.ciJobSecs = Math.max(0, parseFloat(uptimeFile.text()) - started);
+        readCiStatus();
     }
 
     // Failed or just stopped? Asked of systemd every 30 s, and only while the
@@ -1826,10 +1875,21 @@ ShellRoot {
                     Text {
                       id: ciLabel
                       anchors.centerIn: parent
-                      text: root.ciFailed ? "CI ✕" : ciChip.busy ? "CI " + root.formatAge(root.ciJobSecs) : "CI"
+                      text: root.ciFailed ? "CI ✕"
+                            : !ciChip.busy ? "CI"
+                            : root.ciTotal > 0 ? "CI " + Math.floor(root.ciDone / root.ciTotal * 100) + "%"
+                            : "CI " + root.formatAge(root.ciJobSecs)
                       color: ciChip.busy ? root.c.bg : ciChip.tint
                       font.pixelSize: 10
                       font.bold: true
+                    }
+                    Rectangle {                      // build progress underline
+                      visible: ciChip.busy && root.ciTotal > 0
+                      x: 3
+                      y: parent.height - 3
+                      height: 1.5
+                      width: (parent.width - 6) * Math.min(1, root.ciDone / Math.max(1, root.ciTotal))
+                      color: root.c.bg
                     }
                   }
                 }
@@ -2029,7 +2089,33 @@ ShellRoot {
                         text: (root.ciFailed ? "failed" : !root.ciActive ? "stopped"
                                : root.ciJobSecs >= 0 ? "job running for " + root.formatDuration(root.ciJobSecs)
                                : "idle, waiting for jobs")
-                              + "\n" + root.ciUnit
+                              + (root.ciStep !== "" ? "\nstep: " + root.ciStep : "")
+                              + (root.ciTotal > 0
+                                 ? "\nbuilding " + root.ciPkg + "  " + root.ciDone + " / " + root.ciTotal
+                                   + " (" + Math.floor(root.ciDone / root.ciTotal * 100) + "%)"
+                                 : "")
+                      }
+                      Rectangle {                    // build progress bar
+                        visible: root.ciInstalled && root.ciTotal > 0
+                        width: parent.width
+                        height: 4
+                        radius: 2
+                        color: root.c.surface
+                        Rectangle {
+                          width: parent.width * Math.min(1, root.ciDone / Math.max(1, root.ciTotal))
+                          height: parent.height
+                          radius: 2
+                          color: root.c.cyan
+                        }
+                      }
+                      StatText {
+                        visible: root.ciInstalled && root.ciTotal > 0
+                        text: root.ciPkgLabel(root.ciPkg) + ": "
+                              + (root.ciEtaSecs < 0 ? "– (estimating)"
+                                 : "~" + (root.ciEtaSecs < 3600 ? Math.max(1, Math.round(root.ciEtaSecs / 60)) + " min" : root.formatMinutes(root.ciEtaSecs / 60)) + " left")
+                              + "   (this package; the next has its own count)"
+                        font.pixelSize: 10
+                        color: root.c.muted
                       }
 
                       Item { width: 1; height: 4; visible: root.ciInstalled }
