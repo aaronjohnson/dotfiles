@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# usbc-power: what each USB-C charger offers, what was negotiated, and how much
+# power is actually reaching the battery. Reads sysfs only (no root needed).
+#   usbc-power      one report
+#   usbc-power -w   refresh every 2 seconds (Ctrl+C to stop)
+
+calc() { awk "BEGIN { print $1 }"; }
+
+report() {
+  echo "== USB-C ports"
+  for port in /sys/class/typec/port[0-9]; do
+    p=$(basename "$port")
+    partner="$port/$p-partner"
+    role=$(sed -E 's/.*\[([a-z]+)\].*/\1/' "$port/power_role" 2>/dev/null)
+    if [ ! -d "$partner" ]; then
+      echo "$p: nothing connected"
+      continue
+    fi
+    if [ "$role" = "source" ]; then
+      echo "$p: laptop is powering a device ($(cat "$port/power_operation_mode" 2>/dev/null))"
+      continue
+    fi
+    echo "$p: charger connected, USB PD $(cat "$partner/usb_power_delivery_revision" 2>/dev/null)"
+    # The charger's offers (Power Data Objects), if it speaks USB PD.
+    pd=$(readlink -f "$partner/usb_power_delivery" 2>/dev/null)
+    if [ -d "$pd/source-capabilities" ]; then
+      for pdo in "$pd"/source-capabilities/*:*; do
+        name=$(basename "$pdo")
+        if [ -f "$pdo/voltage" ]; then
+          mv=$(cat "$pdo/voltage" | tr -dc 0-9); ma=$(cat "$pdo/maximum_current" | tr -dc 0-9)
+          printf "    offers %-24s %5.1f V x %4.2f A = %5.1f W\n" "$name" \
+            "$(calc "$mv/1000")" "$(calc "$ma/1000")" "$(calc "$mv*$ma/1000000")"
+        elif [ -f "$pdo/minimum_voltage" ]; then
+          printf "    offers %-24s %s-%s, up to %s\n" "$name" "$(cat "$pdo/minimum_voltage")" \
+            "$(cat "$pdo/maximum_voltage")" "$(cat "$pdo/maximum_current" 2>/dev/null)"
+        fi
+      done
+    else
+      echo "    (no USB PD offers: basic USB-C power, at most 5 V x 3 A = 15 W)"
+    fi
+  done
+
+  echo "== Negotiated"
+  for s in /sys/class/power_supply/ucsi-source-psy-*; do
+    [ "$(cat "$s/online" 2>/dev/null)" = 1 ] || continue
+    v=$(cat "$s/voltage_now"); imax=$(cat "$s/current_max")
+    printf "  %s: %.1f V, up to %.2f A (%.0f W)  [%s]\n" "${s##*-}" \
+      "$(calc "$v/1000000")" "$(calc "$imax/1000000")" \
+      "$(calc "$v*$imax/1000000000000")" "$(cat "$s/usb_type" 2>/dev/null | tr -d '\n')"
+  done
+
+  echo "== Battery"
+  b=/sys/class/power_supply/BAT1
+  i=$(cat $b/current_now); v=$(cat $b/voltage_now)
+  printf "  %s%%  %s  %.1f W %s\n" "$(cat $b/capacity)" "$(cat $b/status)" \
+    "$(calc "$i*$v/1000000000000")" \
+    "$( [ "$(cat $b/status)" = Charging ] && echo "into the battery" || echo "drawn from the battery")"
+}
+
+if [ "$1" = "-w" ]; then
+  while true; do clear; date +%T; report; sleep 2; done
+else
+  report
+fi
