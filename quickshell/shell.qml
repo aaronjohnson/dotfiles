@@ -539,25 +539,67 @@ ShellRoot {
         onTriggered: wifiReader.running = true
     }
 
+    // ---- Autohide ----
+    // The bar stays hidden until the pointer touches the top edge of the screen,
+    // then fades in over the windows (Hyprland's layer animation) and fades out
+    // a second after the pointer leaves it. While hidden, windows get the full
+    // screen height. Set autoHide to false for an always-visible bar that
+    // reserves its 40 px, as before.
+    property bool autoHide: true
+
     Variants {
         model: Quickshell.screens
 
+        Scope {
+          id: screenScope
+          required property var modelData
+          property bool revealed: false
+
+          // A 1 px invisible strip along the top edge. Touching it reveals the bar.
+          PanelWindow {
+            screen: screenScope.modelData
+            visible: root.autoHide && !screenScope.revealed
+            anchors {
+              top: true
+              left: true
+              right: true
+            }
+            implicitHeight: 1
+            exclusiveZone: 0
+            color: "transparent"
+
+            MouseArea {
+              anchors.fill: parent
+              hoverEnabled: true
+              onEntered: screenScope.revealed = true
+            }
+          }
+
         PanelWindow {
 	  id: barWindow
-          required property var modelData
-	  screen: modelData
+	  screen: screenScope.modelData
+          visible: !root.autoHide || screenScope.revealed
           anchors {
 	    top: true
 	    left: true
 	    right: true
           }
 	  implicitHeight: 40
-          exclusiveZone: 40
+          exclusiveZone: root.autoHide ? 0 : 40
+
+          // Hide again once the pointer has been off the bar for a second.
+          Timer {
+            interval: 1000
+            running: root.autoHide && screenScope.revealed && !barHover.hovered
+            onTriggered: screenScope.revealed = false
+          }
 
           Rectangle {
             anchors.fill: parent
             color: root.c.bg
             opacity: 0.85
+
+            HoverHandler { id: barHover }
 
             Row {
               anchors.fill: parent
@@ -1219,5 +1261,6 @@ ShellRoot {
             }
 	  }
 	}
+        }
     }
 }
