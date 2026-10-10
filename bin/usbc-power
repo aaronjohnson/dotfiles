@@ -6,23 +6,35 @@
 
 calc() { awk "BEGIN { print $1 }"; }
 
+# Framework 13 Pro expansion bays ("back" = closer to the hinge).
+bay() {
+  case "$1" in
+    port0) echo "port0 (right back)" ;;
+    port1) echo "port1 (right front)" ;;
+    port2) echo "port2 (left front)" ;;
+    port3) echo "port3 (left back)" ;;
+    *) echo "$1" ;;
+  esac
+}
+
 report() {
   echo "== USB-C ports"
   for port in /sys/class/typec/port[0-9]; do
     p=$(basename "$port")
+    name=$(bay "$p")
     partner="$port/$p-partner"
     role=$(sed -E 's/.*\[([a-z]+)\].*/\1/' "$port/power_role" 2>/dev/null)
     if [ ! -d "$partner" ]; then
-      echo "$p: nothing connected"
+      echo "$name: nothing connected"
       continue
     fi
     if [ "$role" = "source" ]; then
-      echo "$p: laptop is powering a device ($(cat "$port/power_operation_mode" 2>/dev/null))"
+      echo "$name: laptop is powering a device ($(cat "$port/power_operation_mode" 2>/dev/null))"
       continue
     fi
     rev=$(cat "$partner/usb_power_delivery_revision" 2>/dev/null)
     # The kernel reports 0.0 when the PD revision is not known.
-    echo "$p: charger connected$( [ -n "$rev" ] && [ "$rev" != 0.0 ] && echo ", USB PD $rev")"
+    echo "$name: charger connected$( [ -n "$rev" ] && [ "$rev" != 0.0 ] && echo ", USB PD $rev")"
     # The charger's offers (Power Data Objects), if it speaks USB PD.
     pd=$(readlink -f "$partner/usb_power_delivery" 2>/dev/null)
     if [ -d "$pd/source-capabilities" ]; then
