@@ -1,0 +1,16 @@
+# Fcitx5 global settings. Only what differs from the defaults is listed here.
+
+[Hotkey]
+# Pressing the toggle key repeatedly doesn't cycle through input methods.
+EnumerateWithTriggerKeys=False
+
+# 半角/全角 toggles Japanese input. (Default also had Ctrl+Space, which is Emacs's set-mark.)
+[Hotkey/TriggerKeys]
+0=Zenkaku_Hankaku
+
+# 変換 always turns Japanese on, 無変換 always turns it off.
+[Hotkey/ActivateKeys]
+0=Henkan_Mode
+
+[Hotkey/DeactivateKeys]
+0=Muhenkan

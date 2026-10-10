@@ -1,0 +1,12 @@
+# yazi: terminal file manager on Super + E (in kitty).
+# Text files open in Emacs in the same terminal; quit Emacs to return to yazi.
+
+[opener]
+edit = [
+	{ run = 'emacs -nw "$@"', block = true, desc = "Emacs", for = "unix" },
+]
+
+[mgr]
+show_hidden = false
+sort_by = "natural"
+sort_dir_first = true

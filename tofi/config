@@ -1,0 +1,30 @@
+# tofi: the app launcher on Super + R (runs tofi-drun).
+# Colours: solarized-light.conf / solarized-dark.conf, picked by launch.sh to match
+# the system light/dark setting (which the Quickshell bar flips at sunrise/sunset).
+# Type to filter, arrows or Ctrl+N/P to move, Enter to launch, Esc to close.
+
+# A centred box rather than tofi's default full-width bar.
+anchor = center
+width = 560
+height = 340
+corner-radius = 10
+border-width = 2
+outline-width = 0
+padding-top = 16
+padding-bottom = 16
+padding-left = 20
+padding-right = 20
+result-spacing = 6
+num-results = 9
+
+font = monospace
+font-size = 14
+
+
+prompt-text = "run  "
+placeholder-text = "app name"
+
+# Launch the chosen app directly (instead of printing its command).
+drun-launch = true
+# Typing anywhere in the name matches, e.g. "term" finds kitty's "Terminal".
+fuzzy-match = true

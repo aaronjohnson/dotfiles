@@ -1,0 +1,24 @@
+[Groups/0]
+# Group Name
+Name=Default
+# Layout
+Default Layout=jp
+# Default Input Method
+DefaultIM=anthy
+
+# Item 0 is used while Japanese input is off: the plain Japanese keyboard.
+[Groups/0/Items/0]
+# Name
+Name=keyboard-jp
+# Layout
+Layout=
+
+# Turned on with 半角/全角 or 変換: Anthy (romaji -> kana/kanji).
+[Groups/0/Items/1]
+# Name
+Name=anthy
+# Layout
+Layout=
+
+[GroupOrder]
+0=Default

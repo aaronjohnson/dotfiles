@@ -1,0 +1,38 @@
+# mako: desktop notifications (top-right). Solarized; the Quickshell bar switches
+# light/dark with `makoctl mode -s light|dark` at sunrise/sunset.
+# After editing: makoctl reload.   Dismiss all: makoctl dismiss -a
+
+font=monospace 11
+width=340
+padding=10
+margin=10
+border-size=2
+border-radius=8
+max-visible=4
+
+# Age out after 8 s (apps can ask for longer or shorter; critical ones stay).
+default-timeout=8000
+# Repeats from the same app with the same title collapse into one card with a count.
+group-by=app-name,summary
+
+# Solarized Dark (the default look)
+background-color=#002b36f2
+text-color=#93a1a1
+border-color=#2aa198
+progress-color=over #586e75
+
+[urgency=low]
+border-color=#586e75
+
+[urgency=critical]
+default-timeout=0
+border-color=#dc322f
+
+# Claude Code's "needs your attention" pings, sent through kitty.
+[app-name=kitty summary="Claude Code"]
+default-timeout=10000
+border-color=#b58900
+
+[mode=light]
+background-color=#fdf6e3f2
+text-color=#586e75
