@@ -2,7 +2,8 @@
 # usbc-power: what each USB-C charger offers, what was negotiated, and how much
 # power is actually reaching the battery. Reads sysfs only (no root needed).
 #   usbc-power      one report
-#   usbc-power -w   refresh every 2 seconds (Ctrl+C to stop)
+#   usbc-power -w     refresh every 10 seconds (Ctrl+C to stop)
+#   usbc-power -w 30  refresh every 30 seconds
 
 calc() { awk "BEGIN { print $1 }"; }
 
@@ -72,7 +73,8 @@ report() {
 }
 
 if [ "$1" = "-w" ]; then
-  while true; do clear; date +%T; report; sleep 2; done
+  every=${2:-10}
+  while true; do clear; echo "$(date +%T)  (every ${every}s, Ctrl+C to stop)"; report; sleep "$every"; done
 else
   report
 fi
