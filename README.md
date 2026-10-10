@@ -17,6 +17,7 @@ tofi, mako, GTK apps and Emacs follow.
 | `yazi/` | Terminal file manager on Super+E, opening files in Emacs |
 | `mako/` | Notifications that age out and group repeats |
 | `fcitx5/` | Japanese input (Anthy): 半角/全角 toggles, 変換/無変換 on/off |
+| `bin/` | Scripts: `hud` (the bar's stats as a terminal UI with polar dials), `usbc-power` (USB-C charger report) |
 | `emacs/` | `init.el`: Wayland clipboard from the terminal, Solarized that follows the switch, nix-mode |
 
 ## Install
@@ -32,3 +33,22 @@ ln -s ~/dotfiles/emacs/init.el ~/.emacs.d/init.el
 Some settings are specific to this machine: the home city's coordinates in
 `quickshell/shell.qml`, `BAT1`/`intel_backlight` sysfs paths, and the
 `/run/user/1000` socket paths.
+
+## hud
+
+`bin/hud` is a terminal companion to the bar's stats dropdown: the same readings
+(CPU per-core rings, temperature, fan, clock, memory, network, battery power and
+charger, NPU, GPU, wifi with MLO links, the CI runner's build progress) drawn as
+polar dials, where angle is time and radius is the value, laps wrapping like a
+spirograph. It is a single Python file using only the standard library; the
+nix-shell shebang fetches Python, so nothing needs installing.
+
+```sh
+hud                 # full screen, every 2 s; q quits, m cycles braille / blocks / ascii
+hud -i 5            # sample every 5 s
+hud --once          # print one frame and exit
+```
+
+It draws with braille dots in kitty and with half blocks on the Linux console
+(whose fonts have no braille); `--braille`, `--blocks` and `--ascii` override, and
+`--mono` drops colour. Dials grow with the window; at 80x24 it shows ten.

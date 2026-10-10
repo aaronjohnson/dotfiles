@@ -1,0 +1,1177 @@
+#!/usr/bin/env nix-shell
+#!nix-shell -i python3 -p python3
+"""hud: the Quickshell bar's stats dropdown as a terminal UI, with polar dials.
+
+Each dial is a polar clock: angle is time (now at 12 o'clock, older samples
+trailing anticlockwise, wrapping every lap like a spirograph), radius is the
+value. Older dots get fainter and sparser. The current value sits in the middle.
+
+    hud                 full screen, refresh every 2 s; q quits, m cycles the drawing mode
+    hud -i 5            refresh every 5 s
+    hud --once          print one frame to stdout and exit (samples 1 s apart for rates)
+    hud --once --samples 30 -i 0.5 --size 120x40
+    hud --braille | --blocks | --ascii   drawing mode (default: braille, or blocks on
+                        the Linux console, whose fonts have no braille)
+
+Reads the same sysfs/procfs files as ~/dotfiles/quickshell/shell.qml and nothing
+else on the fast tick; wifi (nmcli + iw) runs every 20 s, the battery details and
+the CI runner every 10 s. Reading the NPU counters leaves the NPU asleep.
+Standard library only.
+"""
+
+import argparse
+import curses
+import glob
+import locale
+import math
+import os
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import threading
+import time
+from collections import deque
+
+# ---------------------------------------------------------------- reading
+
+def rd(path):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except (OSError, ValueError):
+        return None
+
+
+def num(path):
+    s = rd(path)
+    try:
+        return float(s)
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_cpu_list(s):
+    out = []
+    for part in (s or "").split(","):
+        if not part.strip():
+            continue
+        a, _, b = part.partition("-")
+        try:
+            out.extend(range(int(a), int(b or a) + 1))
+        except ValueError:
+            pass
+    return out
+
+
+class Hist:
+    """A ring of samples; total counts every push, so a sample keeps one identity
+    (for the sparse-dot pattern) as it ages."""
+
+    def __init__(self, n, secs):
+        self.d = deque(maxlen=max(2, n))
+        self.secs = secs            # seconds between samples
+        self.total = 0
+
+    def push(self, v):
+        self.d.append(v)
+        self.total += 1
+
+    def last(self):
+        return self.d[-1] if self.d else None
+
+
+CI_UNIT = "github-runner-nixos-intel-npu.service"
+CI_CGROUP = "/sys/fs/cgroup/system.slice/" + CI_UNIT + "/"
+CI_UNIT_FILE = "/etc/systemd/system/" + CI_UNIT
+CI_STATUS = "/run/github-runner/nixos-intel-npu/ci-status/"
+NPU_DIR = "/sys/class/accel/accel0/device/"
+WIFI_CMD = ("nmcli -t -f IN-USE,SIGNAL,SSID device wifi list --rescan no; echo @@IW; "
+            "command -v iw >/dev/null && for i in $(iw dev | awk '/Interface/{print $2}'); "
+            "do iw dev \"$i\" info; iw dev \"$i\" link; done")
+
+
+class Sampler:
+    def __init__(self, interval):
+        iv = self.iv = interval
+        fast, slow = round(300 / iv), round(1800 / iv)     # 5 min, 30 min
+        self.H = {k: Hist(fast, iv) for k in ("cpu", "mem", "npu", "rx", "tx")}
+        self.H.update({k: Hist(slow, iv) for k in ("temp", "clock", "power", "fan")})
+        self.H["wifi"] = Hist(90, 20)                       # 30 min of 20 s reads
+        self.discover()
+        self.gpu_hist = [Hist(fast, iv) for _ in self.gts]
+        self.last_t = None
+        self.last_stat = None
+        self.last_net = None
+        self.last_npu = None
+        self.last_gpu = [None] * len(self.gts)
+        self.core_load = []
+        self.cpu_load = None
+        self.freqs = []
+        self.temp = None
+        self.fan = None
+        self.clock = None
+        self.mem = {}
+        self.rx = self.tx = None
+        self.rx_total = self.tx_total = 0
+        self.npu = dict(load=None, awake=False, mhz=0, max=0, mem=None)
+        self.gpu = [dict(name=rd(g + "/gtidle/name") or os.path.basename(g), busy=None, mhz=0,
+                         max=num(g + "/freq0/max_freq") or 0) for g in self.gts]
+        self.bat = dict(pct=None, status="", watts=0.0, mins=None, charger=0.0)
+        self.ci = dict(installed=False, active=False, failed=False, job=None, step="",
+                       pkg="", done=0, total=0, eta=None, readable=True)
+        self.ci_rate = []
+        self.wifi = dict(signal=-1, ssid="", links=[], width=0, dbm=0, bitrate=0, ok=None)
+        self.wifi_pending = None
+        self.wifi_thread = None
+        self.next_wifi = self.next_bat = self.next_failed = 0.0
+
+    def discover(self):
+        self.temp_path = None
+        self.fan_path = None
+        fan2 = None
+        for d in sorted(glob.glob("/sys/class/hwmon/hwmon*")):
+            name = rd(d + "/name")
+            if name == "coretemp" and not self.temp_path:
+                for lab in sorted(glob.glob(d + "/temp*_label")):
+                    if (rd(lab) or "").startswith("Package"):
+                        self.temp_path = lab[:-len("_label")] + "_input"
+                        break
+            if os.access(d + "/fan1_input", os.R_OK):
+                if name == "cros_ec" and not self.fan_path:
+                    self.fan_path = d + "/fan1_input"
+                elif not fan2:
+                    fan2 = d + "/fan1_input"
+        self.fan_path = self.fan_path or fan2
+        # Cores and their tiers: P from cpu_core/cpus, LP-E = the slowest of the rest.
+        self.cpu_ids = []
+        for line in (rd("/proc/stat") or "").splitlines()[1:]:
+            if not line.startswith("cpu"):
+                break
+            self.cpu_ids.append(int(line.split()[0][3:]))
+        self.max_mhz = [(num("/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq" % c) or 0) / 1000
+                        for c in self.cpu_ids]
+        pcores = parse_cpu_list(rd("/sys/devices/cpu_core/cpus"))
+        rest = [m for c, m in zip(self.cpu_ids, self.max_mhz) if c not in pcores]
+        top, low = (max(rest), min(rest)) if rest else (0, 0)
+        self.kinds = []
+        for c, m in zip(self.cpu_ids, self.max_mhz):
+            if not pcores:
+                self.kinds.append("")
+            elif c in pcores:
+                self.kinds.append("P")
+            else:
+                self.kinds.append("LP" if m == low and low < top else "E")
+        # GPU GTs (xe: tile0/gt0 render, gt1 media).
+        self.gts, self.gpu_driver, seen = [], "", set()
+        for c in sorted(glob.glob("/sys/class/drm/card[0-9]")):
+            dev = os.path.realpath(c + "/device")
+            if dev in seen:
+                continue
+            seen.add(dev)
+            if not self.gpu_driver:
+                self.gpu_driver = os.path.basename(os.path.realpath(dev + "/driver"))
+            for g in sorted(glob.glob(dev + "/tile*/gt*")):
+                if os.path.exists(g + "/gtidle/idle_residency_ms"):
+                    self.gts.append(g)
+        bats = sorted(glob.glob("/sys/class/power_supply/BAT*"))
+        self.bat_dir = bats[0] + "/" if bats else None
+        self.ucsi = sorted(glob.glob("/sys/class/power_supply/ucsi-source-psy-*"))
+        self.npu_present = os.path.exists(NPU_DIR + "npu_busy_time_us")
+        self.npu_max = num(NPU_DIR + "npu_max_frequency_mhz") or 0
+
+    # -- the 2 s tick --
+    def tick(self, now=None, sync_wifi=False):
+        now = time.monotonic() if now is None else now
+        dt = now - self.last_t if self.last_t else None
+        self.last_t = now
+        self.read_cpu()
+        self.read_mem()
+        self.read_net(dt)
+        self.read_npu(dt)
+        self.read_gpu(now)
+        self.read_slow()
+        if now >= self.next_bat:
+            self.next_bat = now + 10
+            self.read_battery()
+            self.read_runner()
+        if self.ci["installed"] and not self.ci["active"] and now >= self.next_failed:
+            self.next_failed = now + 30
+            try:
+                r = subprocess.run(["systemctl", "is-failed", "--quiet", CI_UNIT], timeout=5)
+                self.ci["failed"] = r.returncode == 0
+            except (OSError, subprocess.SubprocessError):
+                pass
+        if self.wifi_pending is not None:
+            self.take_wifi()
+        if now >= self.next_wifi:
+            self.next_wifi = now + 20
+            if sync_wifi:
+                self.read_wifi()
+                self.take_wifi()
+            elif not (self.wifi_thread and self.wifi_thread.is_alive()):
+                self.wifi_thread = threading.Thread(target=self.read_wifi, daemon=True)
+                self.wifi_thread.start()
+
+    def read_cpu(self):
+        times = []
+        for line in (rd("/proc/stat") or "").splitlines():
+            if not line.startswith("cpu"):
+                break
+            f = line.split()
+            v = [int(x) for x in f[1:9]]          # user..steal (guest is inside user)
+            total = sum(v)
+            times.append((total - v[3] - v[4], total))
+        last, self.last_stat = self.last_stat, times
+        if last and len(last) == len(times):
+            loads = []
+            for (b, t), (b0, t0) in zip(times, last):
+                loads.append(max(0.0, min(1.0, (b - b0) / (t - t0))) if t > t0 else 0.0)
+            self.cpu_load, self.core_load = loads[0], loads[1:]
+            self.H["cpu"].push(self.cpu_load)
+
+    def read_mem(self):
+        info = {}
+        for line in (rd("/proc/meminfo") or "").splitlines():
+            k, _, v = line.partition(":")
+            try:
+                info[k] = int(v.split()[0])
+            except (IndexError, ValueError):
+                pass
+        if info.get("MemTotal"):
+            self.mem = info
+            self.H["mem"].push((info["MemTotal"] - info.get("MemAvailable", 0)) / info["MemTotal"])
+
+    def read_net(self, dt):
+        rx = tx = 0
+        for line in (rd("/proc/net/dev") or "").splitlines()[2:]:
+            name, _, rest = line.partition(":")
+            if not rest or name.strip() == "lo":
+                continue
+            f = rest.split()
+            rx += int(f[0])
+            tx += int(f[8])
+        self.rx_total, self.tx_total = rx, tx
+        if self.last_net and dt:
+            self.rx = max(0.0, (rx - self.last_net[0]) / dt)
+            self.tx = max(0.0, (tx - self.last_net[1]) / dt)
+            self.H["rx"].push(self.rx)
+            self.H["tx"].push(self.tx)
+        self.last_net = (rx, tx)
+
+    def read_npu(self, dt):
+        if not self.npu_present:
+            return
+        busy = num(NPU_DIR + "npu_busy_time_us")
+        if busy is None:
+            return
+        n = self.npu
+        n["awake"] = rd(NPU_DIR + "power/runtime_status") == "active"
+        n["mhz"] = int(num(NPU_DIR + "npu_current_frequency_mhz") or 0)
+        n["max"] = int(self.npu_max)
+        n["mem"] = num(NPU_DIR + "npu_memory_utilization")
+        if self.last_npu is not None and dt:
+            n["load"] = max(0.0, min(1.0, (busy - self.last_npu) / (dt * 1e6)))
+            self.H["npu"].push(n["load"])
+        self.last_npu = busy
+
+    def read_gpu(self, now):
+        for k, g in enumerate(self.gts):
+            idle = num(g + "/gtidle/idle_residency_ms")
+            st = self.gpu[k]
+            st["mhz"] = int(num(g + "/freq0/act_freq") or 0)
+            prev = self.last_gpu[k]
+            if idle is not None and prev and now > prev[1]:
+                st["busy"] = max(0.0, min(1.0, 1 - (idle - prev[0]) / ((now - prev[1]) * 1000)))
+                self.gpu_hist[k].push(st["busy"])
+            self.last_gpu[k] = (idle, now) if idle is not None else None
+
+    def read_slow(self):
+        if self.temp_path:
+            t = num(self.temp_path)
+            if t is not None:
+                self.temp = t / 1000
+                self.H["temp"].push(self.temp)
+        f = [num("/sys/devices/system/cpu/cpu%d/cpufreq/scaling_cur_freq" % c) for c in self.cpu_ids]
+        self.freqs = [(x or 0) / 1000 for x in f]                 # MHz
+        if self.freqs:
+            self.clock = sum(self.freqs) / len(self.freqs) / 1000  # GHz
+            self.H["clock"].push(self.clock)
+        if self.bat_dir:
+            self.read_power()
+            self.H["power"].push(self.bat["watts"])
+        if self.fan_path:
+            r = num(self.fan_path)
+            if r is not None:
+                self.fan = int(r)
+                self.H["fan"].push(self.fan)
+
+    def read_power(self):
+        d = self.bat_dir
+        cur, volt = num(d + "current_now"), num(d + "voltage_now")
+        self.bat["status"] = rd(d + "status") or ""
+        w = (cur or 0) * (volt or 0) / 1e12                         # uA x uV -> W
+        self.bat["watts"] = -w if self.bat["status"] == "Discharging" else w
+        return cur
+
+    def read_battery(self):
+        if not self.bat_dir:
+            return
+        d, b = self.bat_dir, self.bat
+        cap = num(d + "capacity")
+        b["pct"] = int(cap) if cap is not None else None
+        cur = self.read_power() or 0
+        now, full = num(d + "charge_now"), num(d + "charge_full")
+        b["mins"] = None
+        if cur > 0 and now is not None and full is not None:
+            if b["status"] == "Discharging":
+                b["mins"] = now / cur * 60
+            elif b["status"] == "Charging":
+                b["mins"] = (full - now) / cur * 60
+        b["charger"] = 0.0
+        for p in self.ucsi:
+            if rd(p + "/online") == "1":
+                b["charger"] = (num(p + "/voltage_now") or 0) * (num(p + "/current_max") or 0) / 1e12
+
+    def read_runner(self):
+        ci = self.ci
+        ci["installed"] = os.path.exists(CI_UNIT_FILE)
+        ev = rd(CI_CGROUP + "cgroup.events") or ""
+        ci["active"] = ci["installed"] and "populated 1" in ev
+        ci["job"] = None
+        if not ci["active"]:
+            self.clear_ci()
+            return
+        ci["failed"] = False
+        started = None
+        for pid in (rd(CI_CGROUP + "cgroup.procs") or "").split():
+            try:
+                with open("/proc/%s/cmdline" % pid, "rb") as f:
+                    if b"Runner.Worker" not in f.read():
+                        continue
+            except OSError:
+                continue
+            st = rd("/proc/%s/stat" % pid)
+            if st:
+                started = int(st[st.rindex(")") + 2:].split()[19]) / os.sysconf("SC_CLK_TCK")
+                break
+        if started is None:
+            self.clear_ci()
+            return
+        up = (rd("/proc/uptime") or "0").split()[0]
+        ci["job"] = max(0.0, float(up) - started)
+        step = rd(CI_STATUS + "step")
+        prog = rd(CI_STATUS + "progress")
+        ci["readable"] = not (step is None and prog is None and os.path.isdir(CI_STATUS)
+                              and not os.access(CI_STATUS, os.R_OK | os.X_OK))
+        ci["step"] = step or ""
+        f = (prog or "").split()
+        try:
+            done, total = float(f[1]), float(f[2])
+        except (IndexError, ValueError):
+            done = total = 0
+        if len(f) != 3 or total <= 0:
+            self.clear_ci(keep_step=True)
+            return
+        t = time.monotonic()
+        rate = self.ci_rate
+        if f[0] != ci["pkg"] or (rate and done < rate[-1][1]):
+            rate = []
+        rate = [r for r in rate + [(t, done)] if r[0] >= t - 300]
+        self.ci_rate = rate
+        ci.update(pkg=f[0], done=done, total=total)
+        span, gained = rate[-1][0] - rate[0][0], rate[-1][1] - rate[0][1]
+        ci["eta"] = (total - done) / (gained / span) if span >= 60 and gained > 0 else None
+
+    def clear_ci(self, keep_step=False):
+        if not keep_step:
+            self.ci["step"] = ""
+        self.ci.update(pkg="", done=0, total=0, eta=None)
+        self.ci_rate = []
+
+    def read_wifi(self):
+        try:
+            out = subprocess.run(["sh", "-c", WIFI_CMD], capture_output=True, text=True,
+                                 timeout=10).stdout
+        except (OSError, subprocess.SubprocessError):
+            out = None
+        self.wifi_pending = out if out is not None else ""
+
+    def take_wifi(self):
+        text, self.wifi_pending = self.wifi_pending, None
+        w = self.wifi
+        nm, _, iw = text.partition("@@IW")
+        w["ok"] = bool(text)
+        w["signal"], w["ssid"] = -1, ""
+        for line in nm.splitlines():
+            if line.startswith("*:"):
+                sig, _, ssid = line[2:].partition(":")
+                try:
+                    w["signal"] = int(sig)
+                except ValueError:
+                    pass
+                w["ssid"] = ssid.replace("\\:", ":")
+                break
+        # iw: `info` lists MLO links and gives a channel only for the active one;
+        # `link` gives each link's frequency. No "Link N" lines = plain link 0.
+        links, order, active, info_link, link_link = {}, [], -1, -1, 0
+        for line in iw.splitlines():
+            m = re.search(r"- link ID\s+(\d+)", line)
+            if m:
+                info_link = int(m.group(1))
+                continue
+            m = re.search(r"channel \d+ \((\d+) MHz\), width: (\d+) MHz", line)
+            if m:
+                active = info_link if info_link >= 0 else 0
+                w["width"] = int(m.group(2))
+                continue
+            m = re.search(r"Link (\d+) BSSID", line)
+            if m:
+                link_link = int(m.group(1))
+                continue
+            m = re.match(r"\s*freq: ([\d.]+)", line)
+            if m:
+                if link_link not in links:
+                    order.append(link_link)
+                links[link_link] = round(float(m.group(1)))
+                continue
+            m = re.match(r"\s*signal: (-?\d+) dBm", line)
+            if m:
+                w["dbm"] = int(m.group(1))
+                continue
+            m = re.search(r"tx bitrate: ([\d.]+) MBit", line)
+            if m:
+                w["bitrate"] = float(m.group(1))
+        if len(order) == 1:
+            active = order[0]
+        w["links"] = [(i, links[i], i == active) for i in order]
+        self.H["wifi"].push(w["signal"] if w["signal"] >= 0 else None)
+
+
+# ---------------------------------------------------------------- drawing
+
+BOLD, DIM = 1, 2
+
+GLYPHS = {
+    "braille": dict(deg="°", minus="−", x="×", down="↓", up="↑", on="●", off="○",
+                    full="█", light="░", sep="·"),
+    "blocks": dict(deg="°", minus="-", x="x", down="↓", up="↑", on="*", off="o",
+                   full="█", light="░", sep="|"),
+    "ascii": dict(deg="", minus="-", x="x", down="v", up="^", on="*", off="o",
+                  full="#", light="-", sep="|"),
+}
+
+# Colour roles -> 16-colour index (Solarized terminal palette: 9 = orange,
+# 13 = violet, 10 = base01) and the 8-colour fallback (index, bold).
+ROLES = ["fg", "muted", "red", "orange", "yellow", "green", "cyan", "blue", "violet"]
+C16 = dict(fg=-1, muted=10, red=1, orange=9, yellow=3, green=2, cyan=6, blue=4, violet=13)
+C8 = dict(fg=(-1, 0), muted=(-1, DIM), red=(1, 0), orange=(3, 0), yellow=(3, BOLD),
+          green=(2, 0), cyan=(6, 0), blue=(4, 0), violet=(5, 0))
+
+
+class Buf:
+    """The frame as a grid of (char, role, attr); drawn by curses or as text."""
+
+    def __init__(self, w, h):
+        self.w, self.h = w, h
+        self.ch = [[" "] * w for _ in range(h)]
+        self.st = [[("fg", 0)] * w for _ in range(h)]
+
+    def put(self, x, y, s, role="fg", attr=0):
+        if not 0 <= y < self.h:
+            return
+        for i, c in enumerate(s):
+            if 0 <= x + i < self.w:
+                self.ch[y][x + i] = c
+                self.st[y][x + i] = (role, attr)
+
+    def center(self, x, y, w, s, role="fg", attr=0):
+        s = s[:w]
+        self.put(x + (w - len(s)) // 2, y, s, role, attr)
+
+    def runs(self, y):
+        row, st = self.ch[y], self.st[y]
+        x = 0
+        while x < self.w:
+            j = x
+            while j < self.w and st[j] == st[x]:
+                j += 1
+            yield x, "".join(row[x:j]), st[x]
+            x = j
+
+    def text(self, color):
+        out = []
+        for y in range(self.h):
+            line = []
+            for _, s, (role, attr) in self.runs(y):
+                if color and (role != "fg" or attr):
+                    c = C16[role]
+                    codes = []
+                    if c >= 0:
+                        codes.append(str(30 + c if c < 8 else 90 + c - 8))
+                    if attr & BOLD:
+                        codes.append("1")
+                    if attr & DIM:
+                        codes.append("2")
+                    line.append("\x1b[%sm%s\x1b[0m" % (";".join(codes), s) if codes else s)
+                else:
+                    line.append(s)
+            out.append("".join(line).rstrip())
+        return "\n".join(out)
+
+
+class Canvas:
+    """A dot grid over a block of cells: braille 2x4 dots per cell, blocks 1x2
+    (half blocks), ascii 1x1. A cell takes the style of its newest data dot."""
+
+    SUB = {"braille": (2, 4), "blocks": (1, 2), "ascii": (1, 1)}
+    BRAILLE = ((0x01, 0x08), (0x02, 0x10), (0x04, 0x20), (0x40, 0x80))
+
+    def __init__(self, w, h, mode):
+        self.w, self.h, self.mode = w, h, mode
+        self.sx, self.sy = self.SUB[mode]
+        self.bits = [[0] * w for _ in range(h)]
+        self.style = [[None] * w for _ in range(h)]
+        self.data = [[False] * w for _ in range(h)]
+        self.ach = [[" "] * w for _ in range(h)]
+
+    def dot(self, px, py, role, attr=0, data=False, age=0):
+        ix, iy = int(math.floor(px)), int(math.floor(py))
+        cx, cy = ix // self.sx, iy // self.sy
+        if not (0 <= cx < self.w and 0 <= cy < self.h):
+            return
+        if self.mode == "braille":
+            self.bits[cy][cx] |= self.BRAILLE[iy % 4][ix % 2]
+        elif self.mode == "blocks":
+            self.bits[cy][cx] |= 1 if iy % 2 == 0 else 2
+        else:
+            if data:
+                self.ach[cy][cx] = "@" if age == 0 else "o" if age == 1 else "."
+            elif not self.data[cy][cx]:
+                self.ach[cy][cx] = "."
+        if data or not self.data[cy][cx]:
+            self.style[cy][cx] = (role, attr)
+        self.data[cy][cx] |= data
+
+    def blit(self, buf, x0, y0):
+        for y in range(self.h):
+            for x in range(self.w):
+                if self.mode == "braille":
+                    b = self.bits[y][x]
+                    c = chr(0x2800 + b) if b else None
+                elif self.mode == "blocks":
+                    c = {1: "▀", 2: "▄", 3: "█"}.get(self.bits[y][x])
+                else:
+                    c = self.ach[y][x] if self.ach[y][x] != " " else None
+                if c:
+                    buf.put(x0 + x, y0 + y, c, *self.style[y][x])
+
+
+class Dial:
+    def __init__(self, title, tint, series, period=None, lo=0, hi=1, auto=False, step=1,
+                 log=None, mirrored=False, guides=(), centre=(), info=()):
+        self.title, self.tint, self.series = title, tint, series   # [(Hist, sign, role, negrole)]
+        h = series[0][0]
+        self.sps = h.secs
+        self.window = h.secs * h.d.maxlen
+        self.period = period or self.window
+        self.laps = max(1, round(self.window / self.period))
+        self.lo, self.hi, self.log, self.mirrored = lo, hi, log, mirrored
+        self.guides, self.centre, self.info = guides, centre, info
+        if auto:
+            vals = [v for v in h.d if isinstance(v, (int, float))]
+            if vals:
+                if max(vals) > self.hi:
+                    self.hi = math.ceil(max(vals) / step) * step
+                if min(vals) < self.lo:
+                    self.lo = math.floor(min(vals) / step) * step
+        self.hi = max(self.hi, self.lo + 1e-9)
+
+    def reach(self, v):
+        if self.log:
+            m = abs(v)
+            if m <= 0:
+                return 0.0
+            f = (math.log10(m) - self.log[0]) / (self.log[1] - self.log[0])
+        elif self.mirrored:
+            f = abs(v) / max(abs(self.lo), abs(self.hi))
+        else:
+            f = (v - self.lo) / (self.hi - self.lo)
+        return max(0.0, min(1.0, f))
+
+    def r_of(self, v, r0, r1):
+        if self.mirrored:
+            mid = (r0 + r1) / 2
+            return mid + (-1 if v < 0 else 1) * self.reach(v) * (r1 - mid)
+        return r0 + self.reach(v) * (r1 - r0)
+
+
+def keep(idx):
+    """A fixed pseudo-random 0..1 per sample, so thinning old dots doesn't flicker."""
+    return ((idx * 2654435761) & 0xFFFF) / 65536.0
+
+
+class Geometry:
+    """Unit-circle coordinates -> canvas pixels for a w x h-cell dial. A cell is
+    about twice as tall as wide, so the radius is measured in cell widths."""
+
+    def __init__(self, cv):
+        self.cv = cv
+        self.R = min(cv.w / 2, cv.h) - 0.2
+        self.cx, self.cy = cv.w / 2, cv.h            # in cell widths
+        self.res = max(cv.sx, cv.sy / 2)              # pixels per cell width
+
+    def plot(self, r, a, role, attr=0, data=False, age=0):
+        cv = self.cv
+        cv.dot((self.cx + r * self.R * math.cos(a)) * cv.sx,
+               (self.cy + r * self.R * math.sin(a)) * cv.sy / 2, role, attr, data, age)
+
+    def ring(self, r, spacing, role="muted", attr=DIM):
+        n = max(8, int(2 * math.pi * r * self.R * self.res / spacing))
+        for k in range(n):
+            self.plot(r, 2 * math.pi * k / n, role, attr)
+
+    def arc(self, r, a0, span, role, attr=0, data=True, every=1):
+        n = max(2, int(abs(span) * r * self.R * self.res * 1.5))
+        for k in range(0, n + 1, every):
+            self.plot(r, a0 + span * k / n, role, attr, data)
+
+
+R0, R1 = 0.36, 0.88     # value rings, as a share of the dial's radius
+
+
+def draw_dial(buf, x0, y0, w, h, d, mode):
+    cv = Canvas(w, h, mode)
+    g = Geometry(cv)
+    big = g.R * g.res >= 20                          # room for guides and ticks
+    px = 1 / (g.R * g.res)                            # one pixel, as a share of the radius
+    # A dotted rim, with ticks inside it every 5 min on long laps, every
+    # minute, or every 30 s.
+    g.ring(1.0, 3 if mode == "braille" else 2)
+    if big:
+        tick = 300 if d.period >= 1200 else 60 if d.period >= 240 else 30
+        t = 0
+        while t < d.period - 0.5:
+            a = -math.pi / 2 - t / d.period * 2 * math.pi
+            g.plot(1.0 - 2 * px, a, "muted", DIM)
+            g.plot(1.0 - 3 * px, a, "muted", DIM)
+            t += tick
+        g.ring(R0, 2)
+        for gv in d.guides:
+            for v in ((gv, -gv) if d.mirrored else (gv,)):
+                g.ring(d.r_of(v, R0, R1), 4)
+    if d.mirrored:                                    # the zero ring
+        g.ring((R0 + R1) / 2, 2 if mode == "braille" else 1.5, "muted", 0)
+    # The "now" hand at 12 o'clock.
+    steps = max(2, int((1 - R0) * g.R * g.res))
+    for k in range(0, steps + 1, 2):
+        g.plot(R0 + (1 - R0) * k / steps, -math.pi / 2, "muted", DIM)
+    # Samples, oldest first so newer dots win their cell.
+    for hist, sign, role, neg in d.series:
+        n, cap = len(hist.d), hist.d.maxlen
+        base = hist.total - n
+        for i, v in enumerate(hist.d):
+            if not isinstance(v, (int, float)):
+                continue
+            v *= sign
+            if d.log and d.reach(v) == 0:
+                continue                                # log scale: zero = idle, nothing to draw
+            age = n - 1 - i
+            frac = age / cap
+            if age >= 3 and keep(base + i) > 1 - 0.7 * math.sqrt(frac):
+                continue                                # older: sparser
+            cls = 0 if age < 3 else 1 if frac <= 0.4 else 2
+            attr = BOLD if cls == 0 else DIM if cls == 2 else 0
+            a = -math.pi / 2 - ((age * d.sps) % d.period) / d.period * 2 * math.pi
+            g.plot(d.r_of(v, R0, R1), a, neg if v < 0 else role, attr, True, cls)
+    cv.blit(buf, x0, y0)
+    put_centre(buf, x0, y0, w, h, d.centre)
+
+
+def put_centre(buf, x0, y0, w, h, lines):
+    lines = [l for l in lines if l and l[0]]
+    top = int(h / 2 - len(lines) / 2 + 0.5)
+    inner = max(4, int(2 * R0 * min(w / 2, h)) + 2)
+    for k, (s, role, *attr) in enumerate(lines):
+        buf.center(x0, y0 + top + k, w, s[:inner], role, attr[0] if attr else BOLD)
+
+
+def load_role(l):
+    return "green" if l < 0.25 else "yellow" if l < 0.5 else "orange" if l < 0.75 else "red"
+
+
+def draw_cpu_rings(buf, x0, y0, w, h, s, mode, G):
+    """The bar's core rings: one ring per tier (P inside, then E, then LP-E),
+    a segment per core filled by its load."""
+    cv = Canvas(w, h, mode)
+    g = Geometry(cv)
+    tiers = [k for k in ("P", "E", "LP", "") if k in s.kinds]
+    wedge = 0.5                                       # label gap at the top
+    start0, sweep = -math.pi / 2 + wedge / 2, 2 * math.pi - wedge
+    k = len(tiers)
+    radii = [0.95] if k == 1 else [0.55 + t * 0.4 / (k - 1) for t in range(k)]
+    thick = g.R * g.res >= 18
+    for t, tier in enumerate(tiers):
+        cores = [i for i, kk in enumerate(s.kinds) if kk == tier]
+        seg = sweep / len(cores)
+        gap = min(0.07 * 3, seg * 0.25) if g.R * g.res < 30 else 0.07
+        r = radii[t]
+        for j, core in enumerate(cores):
+            a0, span = start0 + j * seg + gap / 2, seg - gap
+            load = s.core_load[core] if core < len(s.core_load) else 0
+            g.arc(r, a0, span, "muted", DIM, False, every=2)
+            if load > 0.005:
+                fill = max(span * load, 0.03)
+                g.arc(r, a0, fill, load_role(load), BOLD if load >= 0.5 else 0)
+                if thick:
+                    g.arc(r - 1 / (g.R * g.res), a0, fill, load_role(load), BOLD if load >= 0.5 else 0)
+    cv.blit(buf, x0, y0)
+    used = set()
+    for t, tier in enumerate(tiers):                  # tier letters in the top gap
+        ry = max(0, int((g.cy - radii[t] * g.R) / 2))
+        if tier and ry not in used:
+            used.add(ry)
+            buf.center(x0, y0 + ry, w, tier[0], "muted")
+    put_centre(buf, x0, y0, w, h, [
+        (pct(s.cpu_load), "fg"),
+        (temp_text(s.temp, G), "red", 0)])
+
+
+def draw_cpu_bars(buf, x0, y0, w, h, s, mode, G):
+    """Per-core bars for coarse modes: tier letters along the bottom."""
+    n = len(s.cpu_ids)
+    if not n:
+        return
+    gap = 1 if 2 * n - 1 <= w else 0
+    bw = max(1, (w - gap * (n - 1)) // n)
+    total = bw * n + gap * (n - 1)
+    x = x0 + max(0, (w - total) // 2)
+    rows = h - 1
+    sub = 2 if mode == "blocks" else 1
+    for i in range(n):
+        load = s.core_load[i] if i < len(s.core_load) else 0
+        units = int(round(load * rows * sub))
+        for r in range(rows):
+            filled = units - r * sub
+            if filled >= sub:
+                c, role, attr = G["full"], load_role(load), 0
+            elif filled == 1 and sub == 2:
+                c, role, attr = "▄", load_role(load), 0
+            else:
+                c, role, attr = ("." if mode == "ascii" else G["light"]), "muted", DIM
+            buf.put(x + i * (bw + gap), y0 + rows - 1 - r, c * bw, role, attr)
+        kind = s.kinds[i] or "?"
+        buf.put(x + i * (bw + gap), y0 + rows, (kind[0] * bw)[:bw], "muted")
+
+
+# ---------------------------------------------------------------- formatting
+
+def pct(v):
+    return "%d%%" % round(v * 100) if v is not None else "…"
+
+
+def temp_text(t, G):
+    return "%d%sC" % (round(t), G["deg"]) if t is not None else ""
+
+
+def fmt_rate(b):
+    if b is None:
+        return "…"
+    if b >= 1048576:
+        return "%.1fM" % (b / 1048576)
+    if b >= 1024:
+        return "%dK" % round(b / 1024)
+    return "%dB" % round(b)
+
+
+def fmt_bytes(b):
+    for unit, n in (("T", 1 << 40), ("G", 1 << 30), ("M", 1 << 20), ("K", 1 << 10)):
+        if b >= n:
+            return ("%.1f" if b < 10 * n else "%.0f") % (b / n) + unit
+    return "%dB" % b
+
+
+def fmt_kb(kb):
+    return fmt_bytes(kb * 1024)
+
+
+def fmt_mins(m):
+    m = round(m)
+    return "%dh%02d" % (m // 60, m % 60)
+
+
+def fmt_age(secs):
+    return "%ds" % secs if secs < 60 else "%dm" % (secs // 60) if secs < 3600 else fmt_mins(secs / 60)
+
+
+def signed_watts(w, G):
+    w = round(w)
+    return "+%d W" % w if w > 0 else "%s%d W" % (G["minus"], -w) if w < 0 else "0 W"
+
+
+def band(freq):
+    return "2.4" if freq < 3000 else "5" if freq < 5925 else "6"
+
+
+def hist_max(h):
+    vals = [v for v in h.d if isinstance(v, (int, float))]
+    return max(vals) if vals else None
+
+
+def hist_mean(h):
+    vals = [v for v in h.d if isinstance(v, (int, float))]
+    return sum(vals) / len(vals) if vals else None
+
+
+# ---------------------------------------------------------------- panels
+
+def panels(s, G):
+    """Everything to show, most important first; the layout keeps as many as fit."""
+    H, out = s.H, []
+
+    tier_clock = []
+    for tier, lab in (("P", "P"), ("E", "E"), ("LP", "L")):
+        f = [m for m, k in zip(s.freqs, s.kinds) if k == tier]
+        if f:
+            tier_clock.append("%s%.1f" % (lab, sum(f) / len(f) / 1000))
+    out.append(("cpu", "CPU", "yellow", None, [
+        (" ".join(tier_clock) + "G" if tier_clock else "", "fg"),
+        ("rings: P in, LP out" if s.kinds and s.kinds[0] else "", "muted")]))
+
+    if s.temp_path:
+        m = hist_max(H["temp"])
+        out.append(("dial", Dial("TEMP", "red", [(H["temp"], 1, "red", "red")], period=300,
+                                 lo=30, hi=100, auto=True, step=10, guides=(50, 90),
+                                 centre=[(temp_text(s.temp, G), "red")],
+                                 info=[("30m max " + temp_text(m, G) if m else "", "fg"),
+                                       ("guides 50, 90", "muted")])))
+    if s.bat_dir:
+        b = s.bat
+        state = (b["status"] or "").lower()
+        if b["mins"]:
+            state += (" full in " if b["status"] == "Charging" else " ") + fmt_mins(b["mins"])
+        out.append(("dial", Dial("POWER", "green", [(H["power"], 1, "green", "orange")], period=600,
+                                 log=(0, 2), mirrored=True, guides=(10,),
+                                 centre=[(signed_watts(b["watts"], G), "green" if b["watts"] >= 0 else "orange"),
+                                         ("%d%%" % b["pct"] if b["pct"] is not None else "", "fg", 0)],
+                                 info=[(state, "fg"),
+                                       ("charger %d W" % round(b["charger"]) if b["charger"] > 0 else "no charger",
+                                        "muted")])))
+    out.append(("dial", Dial("NET", "blue", [(H["rx"], 1, "blue", "orange"), (H["tx"], -1, "blue", "orange")],
+                             log=(2, 8), mirrored=True, guides=(1e3, 1e6),
+                             centre=[(G["down"] + fmt_rate(s.rx), "blue"), (G["up"] + fmt_rate(s.tx), "orange")],
+                             info=[("%s%s %s%s" % (G["down"], fmt_bytes(s.rx_total), G["up"],
+                                                   fmt_bytes(s.tx_total)), "fg"),
+                                   ("since boot; log rate", "muted")])))
+    m = s.mem
+    if m:
+        used = m["MemTotal"] - m.get("MemAvailable", 0)
+        out.append(("dial", Dial("MEM", "violet", [(H["mem"], 1, "violet", "violet")], guides=(0.5, 0.75),
+                                 centre=[(pct(used / m["MemTotal"]), "violet"), (fmt_kb(used), "fg", 0)],
+                                 info=[("%s of %s" % (fmt_kb(used), fmt_kb(m["MemTotal"])), "fg"),
+                                       ("swap %s of %s" % (fmt_kb(m.get("SwapTotal", 0) - m.get("SwapFree", 0)),
+                                                           fmt_kb(m.get("SwapTotal", 0))), "muted")])))
+    if s.npu_present:
+        n = s.npu
+        out.append(("dial", Dial("NPU", "green", [(H["npu"], 1, "green", "green")], log=(-3, 0),
+                                 guides=(0.01, 0.1),
+                                 centre=[(pct(n["load"]), "green"),
+                                         ("awake" if n["awake"] else "asleep", "fg" if n["awake"] else "muted", 0)],
+                                 info=[("%d of %d MHz" % (n["mhz"], n["max"]), "fg"),
+                                       ("mem " + fmt_bytes(n["mem"] or 0) if n["mem"] is not None else "", "muted")])))
+    if s.gts:
+        series, cen, info = [], [], []
+        roles = ["orange", "violet", "cyan", "blue"]
+        for k, st in enumerate(s.gpu):
+            role = roles[k % len(roles)]
+            series.append((s.gpu_hist[k], 1, role, role))
+            nm = st["name"]
+            short = "r" if nm.endswith("-rc") else "m" if nm.endswith("-mc") else nm[-2:]
+            cen.append(((short + " " if k else "") + pct(st["busy"]), role, BOLD if k == 0 else 0))
+            info.append("%s %s" % (short, ("%d" % st["mhz"]) if st["mhz"] > 0 else "C6"))
+        out.append(("dial", Dial("GPU", "orange", series, log=(-3, 0), guides=(0.01, 0.1), centre=cen[:2],
+                                 info=[("MHz " + " ".join(info), "fg"),
+                                       ("render orange, media violet" if len(series) > 1 else s.gpu_driver,
+                                        "muted")])))
+    if s.freqs:
+        out.append(("dial", Dial("CLOCK", "yellow", [(H["clock"], 1, "yellow", "yellow")], period=120,
+                                 lo=0, hi=4, auto=True, guides=(1, 3),
+                                 centre=[("%.1fG" % s.clock, "yellow")],
+                                 info=[("30m avg %.1fG" % (hist_mean(H["clock"]) or 0), "fg"),
+                                       ("mean of %d cores" % len(s.freqs), "muted")])))
+    if s.fan_path:
+        mx = hist_max(H["fan"])
+        out.append(("dial", Dial("FAN", "cyan", [(H["fan"], 1, "cyan", "cyan")], period=300,
+                                 lo=0, hi=6000, auto=True, step=1000, guides=(2000, 4000),
+                                 centre=[(str(s.fan) if s.fan is not None else "…", "cyan"), ("rpm", "muted", 0)],
+                                 info=[("30m max %d" % mx if mx is not None else "", "fg"),
+                                       ("guides 2000, 4000", "muted")])))
+    w = s.wifi
+    if w["ok"] is not False:
+        links = " ".join("%s%s" % (band(f), G["on"] if a else G["off"]) for _, f, a in w["links"])
+        out.append(("dial", Dial("WIFI", "cyan", [(H["wifi"], 1, "cyan", "cyan")], lo=0, hi=100,
+                                 guides=(50, 75),
+                                 centre=[("%d%%" % w["signal"] if w["signal"] >= 0 else
+                                          ("off" if w["ok"] else "…"), "cyan"),
+                                         ("%d dBm" % w["dbm"] if w["signal"] >= 0 and w["dbm"] else "", "muted", 0)],
+                                 info=[(w["ssid"] or "offline", "fg"),
+                                       (("%s %dMHz %dMb" % (links, w["width"], w["bitrate"])).strip()
+                                        if w["signal"] >= 0 else "", "muted")])))
+    out.append(("dial", Dial("LOAD", "yellow", [(H["cpu"], 1, "yellow", "yellow")], guides=(0.5, 0.75),
+                             centre=[(pct(s.cpu_load), "yellow")],
+                             info=[("%d cores" % len(s.cpu_ids), "fg"), ("all cores, 5 min", "muted")])))
+    return out
+
+
+def window_text(d, G):
+    def mins(secs):
+        return "%dm" % round(secs / 60) if secs >= 60 else "%ds" % secs
+    if d.laps > 1:
+        return "%d%s%s" % (d.laps, G["x"], mins(d.period))
+    return mins(d.window)
+
+
+# ---------------------------------------------------------------- layout
+
+def layout(W, Hh, count):
+    """Biggest dial height whose grid of tiles fits count panels; if none does,
+    the smallest legible one (7 rows), showing the panels that fit.
+    Returns (dial rows, info rows, tile width, cols, rows)."""
+    for h in range(max(7, min(30, Hh - 2)), 6, -1):
+        k = 1 if h < 10 else 2
+        tw = max(2 * h + 2, 16)
+        cols, rows = W // tw, Hh // (h + 1 + k)
+        if cols * rows >= count:
+            return h, k, tw, cols, rows
+    h = max(3, min(7, Hh - 2))
+    return h, 1, 16, max(1, W // 16), max(1, Hh // (h + 2))
+
+
+def render(s, W, H, mode):
+    G = GLYPHS[mode]
+    buf = Buf(W, H)
+    # Header.
+    b = s.bat
+    head = [("hud", "cyan", BOLD), (" " + socket.gethostname(), "muted", 0),
+            ("  " + time.strftime("%H:%M:%S"), "fg", 0)]
+    if b["pct"] is not None:
+        head.append(("  bat %d%% %s" % (b["pct"], signed_watts(b["watts"], G)), "green", 0))
+    if s.wifi["ssid"]:
+        head.append(("  " + s.wifi["ssid"], "cyan", 0))
+    x = 0
+    for t, role, attr in head:
+        buf.put(x, 0, t, role, attr)
+        x += len(t)
+    hint = "q quit  m %s" % mode
+    if x + len(hint) + 2 <= W:
+        buf.put(W - len(hint), 0, hint, "muted")
+    # CI rows at the bottom while the runner is installed.
+    ci_rows = 2 if s.ci["installed"] else 0
+    if ci_rows:
+        draw_ci(buf, H - 2, W, s, G)
+    # Tiles.
+    ps = panels(s, G)
+    h, k, tw, cols, rows = layout(W, H - 1 - ci_rows, len(ps))
+    th = h + 1 + k
+    ps = ps[:cols * rows]
+    left = (W - cols * tw) // 2
+    spare = (H - 1 - ci_rows) - rows * th
+    top = 1 + max(0, min(spare // 2, 1))
+    for i, p in enumerate(ps):
+        x0 = left + (i % cols) * tw
+        y0 = top + (i // cols) * th
+        dw = 2 * h
+        dx = x0 + (tw - dw) // 2
+        if p[0] == "cpu":
+            _, title, tint, _, info = p
+            if mode == "braille":
+                draw_cpu_rings(buf, dx, y0, dw, h, s, mode, G)
+            else:
+                draw_cpu_bars(buf, x0, y0, tw, h, s, mode, G)
+            cap = [(title, tint, BOLD), (" " + pct(s.cpu_load), "fg", 0)]
+        else:
+            d = p[1]
+            draw_dial(buf, dx, y0, dw, h, d, mode)
+            info = d.info
+            cap = [(d.title, d.tint, BOLD), (" " + window_text(d, G), "muted", 0)]
+        caption(buf, x0, y0 + h, tw, cap)
+        for j, (t, role) in enumerate([l for l in info if l[0]][:k]):
+            buf.center(x0, y0 + h + 1 + j, tw - 1, t, role)
+    return buf
+
+
+def caption(buf, x0, y, w, parts):
+    total = sum(len(t) for t, _, _ in parts)
+    x = x0 + max(0, (w - total) // 2)
+    for t, role, attr in parts:
+        t = t[:max(0, x0 + w - x)]
+        buf.put(x, y, t, role, attr)
+        x += len(t)
+
+
+def draw_ci(buf, y, W, s, G):
+    ci = s.ci
+    if ci["job"] is not None:
+        line = [("CI ", "cyan", BOLD), (G["on"] + " job " + fmt_age(ci["job"]), "cyan", 0)]
+        if ci["step"]:
+            line.append(("  " + ci["step"], "fg", 0))
+        elif not ci["readable"]:
+            line.append(("  (ci-status not readable)", "muted", 0))
+    elif ci["active"]:
+        line = [("CI ", "cyan", BOLD), (G["off"] + " idle, waiting for a job", "muted", 0)]
+    elif ci["failed"]:
+        line = [("CI ", "red", BOLD), ("failed", "red", 0)]
+    else:
+        line = [("CI ", "muted", BOLD), ("stopped", "muted", 0)]
+    x = 0
+    for t, role, attr in line:
+        buf.put(x, y, t[:max(0, W - x)], role, attr)
+        x += len(t)
+    if ci["total"] > 0:
+        pkg = ci["pkg"]
+        label = "LLVM" if "llvm" in pkg else "compiler" if "compiler" in pkg else pkg
+        tail = " %d/%d %d%%" % (ci["done"], ci["total"], ci["done"] / ci["total"] * 100)
+        if ci["eta"] is not None:
+            tail += "  ETA " + fmt_age(ci["eta"])
+        head = label[:20] + " "
+        bw = max(5, W - len(head) - len(tail) - 1)
+        fill = int(round(bw * ci["done"] / ci["total"]))
+        buf.put(0, y + 1, head, "cyan", BOLD)
+        buf.put(len(head), y + 1, G["full"] * fill, "cyan")
+        buf.put(len(head) + fill, y + 1, G["light"] * (bw - fill), "muted", DIM)
+        buf.put(len(head) + bw, y + 1, tail, "fg")
+    elif ci["job"] is not None:
+        buf.put(0, y + 1, "no build progress reported", "muted", DIM)
+
+
+# ---------------------------------------------------------------- terminal
+
+def detect_mode(args):
+    if args.braille:
+        return "braille"
+    if args.blocks:
+        return "blocks"
+    if args.ascii:
+        return "ascii"
+    # Python forces UTF-8 on a C locale, so ask the environment what the terminal speaks.
+    env = os.environ.get("LC_ALL") or os.environ.get("LC_CTYPE") or os.environ.get("LANG") or ""
+    if "utf8" not in env.lower().replace("-", ""):
+        return "ascii"
+    return "blocks" if os.environ.get("TERM", "") == "linux" else "braille"
+
+
+class CursesOut:
+    def __init__(self, scr, mono):
+        self.scr = scr
+        self.attrs = {}
+        colors = 0
+        if not mono and curses.has_colors():
+            curses.start_color()
+            try:
+                curses.use_default_colors()
+                bg = -1
+            except curses.error:
+                bg = curses.COLOR_BLACK
+            colors = curses.COLORS
+        for i, role in enumerate(ROLES):
+            extra = 0
+            if colors >= 16:
+                fg = C16[role]
+                if fg >= 0:
+                    curses.init_pair(i + 1, fg, bg)
+                    extra = curses.color_pair(i + 1)
+            elif colors >= 8:
+                fg, b = C8[role]
+                if fg >= 0:
+                    curses.init_pair(i + 1, fg, bg)
+                    extra = curses.color_pair(i + 1)
+                extra |= curses.A_BOLD if b & BOLD else 0
+                extra |= curses.A_DIM if b & DIM else 0
+            elif role == "muted":
+                extra = curses.A_DIM
+            self.attrs[role] = extra
+
+    def draw(self, buf):
+        scr = self.scr
+        scr.erase()
+        for y in range(buf.h):
+            for x, s, (role, attr) in buf.runs(y):
+                a = self.attrs[role]
+                if attr & BOLD:
+                    a |= curses.A_BOLD
+                if attr & DIM:
+                    a |= curses.A_DIM
+                try:
+                    scr.addstr(y, x, s, a)
+                except curses.error:
+                    pass                  # the bottom-right cell
+        scr.refresh()
+
+
+def run_curses(scr, args, mode):
+    curses.curs_set(0)
+    out = CursesOut(scr, args.mono)
+    s = Sampler(args.interval)
+    modes = ["braille", "blocks", "ascii"]
+    s.tick()
+    next_t = time.monotonic() + args.interval
+    while True:
+        H, W = scr.getmaxyx()
+        out.draw(render(s, W, H, mode))
+        while True:
+            wait = next_t - time.monotonic()
+            if wait <= 0:
+                break
+            scr.timeout(int(wait * 1000) + 1)
+            c = scr.getch()
+            if c in (ord("q"), ord("Q"), 27):
+                return
+            if c == ord("m"):
+                mode = modes[(modes.index(mode) + 1) % len(modes)]
+                break
+            if c == curses.KEY_RESIZE:
+                break
+        if time.monotonic() >= next_t:
+            s.tick()
+            next_t = max(next_t + args.interval, time.monotonic() + 0.1)
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Polar-dial system monitor (terminal companion to the Quickshell bar).")
+    ap.add_argument("-i", "--interval", type=float, default=2.0, help="seconds between samples (default 2)")
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument("--braille", action="store_true", help="draw with braille dots (2x4 per cell)")
+    g.add_argument("--blocks", action="store_true", help="draw with half blocks (the Linux console default)")
+    g.add_argument("--ascii", action="store_true", help="draw with plain ASCII")
+    ap.add_argument("--mono", action="store_true", help="no colour")
+    ap.add_argument("--once", action="store_true", help="print one frame to stdout and exit")
+    ap.add_argument("--samples", type=int, default=2, help="with --once: samples to take first (default 2)")
+    ap.add_argument("--size", help="with --once: COLSxROWS (default: the terminal's size)")
+    args = ap.parse_args()
+    args.interval = max(0.2, args.interval)
+    try:
+        locale.setlocale(locale.LC_ALL, "")
+    except locale.Error:
+        pass
+    mode = detect_mode(args)
+    if args.once:
+        if args.size:
+            W, H = (int(v) for v in args.size.lower().split("x"))
+        else:
+            W, H = shutil.get_terminal_size((80, 24))
+        s = Sampler(args.interval)
+        for k in range(max(1, args.samples)):
+            if k:
+                time.sleep(min(args.interval, 1.0) if args.samples == 2 else args.interval)
+            s.tick(sync_wifi=True)
+        print(render(s, W, H, mode).text(sys.stdout.isatty() and not args.mono))
+        return
+    try:
+        curses.wrapper(run_curses, args, mode)
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == "__main__":
+    main()
