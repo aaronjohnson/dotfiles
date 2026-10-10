@@ -204,7 +204,91 @@ ShellRoot {
         running: true
         repeat: true
         triggeredOnStart: true
-        onTriggered: root.readBattery()
+        onTriggered: {
+            root.readBattery();
+            root.readRunner();
+        }
+    }
+
+    // ---- Self-hosted CI runner ----
+    // The GitHub Actions runner service, read from its systemd cgroup on the
+    // battery's 10 s tick: no processes and no network. While it waits for
+    // work only the Runner.Listener runs; during a job a Runner.Worker runs
+    // too, and that process's start time gives the job's age. Until the unit
+    // is installed (its file under /etc/systemd/system) this costs one failed
+    // file open per tick and the chip stays hidden.
+    property string ciUnit: "github-runner-nixos-intel-npu.service"
+    property string ciCgroup: "/sys/fs/cgroup/system.slice/" + ciUnit + "/"
+    property string ciUnitFile: "/etc/systemd/system/" + ciUnit
+    property bool ciInstalled: false     // the unit exists (enabled in the NixOS config)
+    property bool ciActive: false        // its cgroup holds processes
+    property bool ciFailed: false        // systemd marks it failed (checked while it is down)
+    property real ciJobSecs: -1          // age of the running job; -1 = idle
+
+    FileView { id: ciUnitView; blockLoading: true; printErrors: false; path: root.ciUnitFile }
+    FileView { id: ciEvents; blockLoading: true; printErrors: false; path: root.ciCgroup + "cgroup.events" }
+    FileView { id: ciProcs; blockLoading: true; printErrors: false; path: root.ciCgroup + "cgroup.procs" }
+    property var ciPids: []              // processes in the runner's cgroup
+    // One pair of readers per process: a FileView keeps the old text when its
+    // path changes, so each pid gets its own.
+    Variants {
+        id: ciProcViews
+        model: root.ciPids
+        Scope {
+            required property var modelData
+            property alias cmdline: ciCmd
+            property alias stat: ciStat
+            FileView { id: ciCmd; blockLoading: true; printErrors: false; path: "/proc/" + modelData + "/cmdline" }
+            FileView { id: ciStat; blockLoading: true; printErrors: false; path: "/proc/" + modelData + "/stat" }
+        }
+    }
+    FileView { id: uptimeFile; blockLoading: true; path: "/proc/uptime" }
+
+    function readRunner() {
+        ciUnitView.reload();
+        root.ciInstalled = ciUnitView.text().length > 0;
+        if (!root.ciInstalled) root.ciFailed = false;
+        ciEvents.reload();
+        root.ciActive = root.ciInstalled && /populated 1/.test(ciEvents.text());
+        if (!root.ciActive) { root.ciPids = []; root.ciJobSecs = -1; return; }
+        root.ciFailed = false;
+        ciProcs.reload();
+        var pids = ciProcs.text().trim().split("\n").filter(function (x) { return x !== ""; });
+        if (pids.join(" ") !== root.ciPids.join(" ")) root.ciPids = pids;
+        var inst = ciProcViews.instances, started = -1;
+        for (var i = 0; i < inst.length && started < 0; i++) {
+            inst[i].cmdline.reload();
+            if (inst[i].cmdline.text().indexOf("Runner.Worker") < 0) continue;
+            // Field 22 of /proc/PID/stat: start time in clock ticks (100/s) since boot.
+            inst[i].stat.reload();
+            var st = inst[i].stat.text();
+            var fields = st.substring(st.lastIndexOf(")") + 2).split(" ");
+            started = Number(fields[19]) / 100;
+        }
+        if (started < 0) { root.ciJobSecs = -1; return; }
+        uptimeFile.reload();
+        root.ciJobSecs = Math.max(0, parseFloat(uptimeFile.text()) - started);
+    }
+
+    // Failed or just stopped? Asked of systemd every 30 s, and only while the
+    // unit is installed but not running.
+    Process {
+        id: ciFailedCheck
+        command: ["systemctl", "is-failed", "--quiet", root.ciUnit]
+        onExited: (code) => root.ciFailed = code === 0
+    }
+    Timer {
+        interval: 30000
+        running: root.ciInstalled && !root.ciActive
+        repeat: true
+        triggeredOnStart: true
+        onTriggered: if (!ciFailedCheck.running) ciFailedCheck.running = true
+    }
+    onCiActiveChanged: if (ciActive) ciFailed = false
+
+    // "45s", "12m", "1h05"
+    function formatAge(secs) {
+        return secs < 60 ? Math.round(secs) + "s" : secs < 3600 ? Math.floor(secs / 60) + "m" : formatMinutes(secs / 60);
     }
 
     // ---- Brightness ----
@@ -1711,6 +1795,43 @@ ShellRoot {
                       font.family: "monospace"
                     }
                   }
+
+                  // ---- CI runner: hidden while the service is off; cyan outline
+                  // while it waits for jobs; filled and glowing, with the job's
+                  // age, while one runs; red outline if systemd says it failed ----
+                  Item {
+                    id: ciChip
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: root.ciActive || root.ciFailed
+                    property bool busy: root.ciActive && root.ciJobSecs >= 0
+                    property color tint: root.ciFailed ? root.c.red : root.c.cyan
+                    width: ciLabel.implicitWidth + 10
+                    height: 16
+
+                    Rectangle {                      // glow while a job runs
+                      anchors.fill: parent
+                      anchors.margins: -3
+                      radius: 7
+                      visible: ciChip.busy
+                      color: root.c.cyan
+                      opacity: 0.3
+                    }
+                    Rectangle {
+                      anchors.fill: parent
+                      radius: 4
+                      color: ciChip.busy ? root.c.cyan : "transparent"
+                      border.width: 1
+                      border.color: ciChip.tint
+                    }
+                    Text {
+                      id: ciLabel
+                      anchors.centerIn: parent
+                      text: root.ciFailed ? "CI ✕" : ciChip.busy ? "CI " + root.formatAge(root.ciJobSecs) : "CI"
+                      color: ciChip.busy ? root.c.bg : ciChip.tint
+                      font.pixelSize: 10
+                      font.bold: true
+                    }
+                  }
                 }
               }
 
@@ -1899,6 +2020,19 @@ ShellRoot {
                       }
 
                       Item { width: 1; height: 4 }
+
+                      // -- CI runner (only once the service is installed) --
+                      StatTitle { text: "CI RUNNER"; color: root.c.cyan; visible: root.ciInstalled }
+                      StatText {
+                        visible: root.ciInstalled
+                        color: root.ciFailed ? root.c.red : root.c.fg
+                        text: (root.ciFailed ? "failed" : !root.ciActive ? "stopped"
+                               : root.ciJobSecs >= 0 ? "job running for " + root.formatDuration(root.ciJobSecs)
+                               : "idle, waiting for jobs")
+                              + "\n" + root.ciUnit
+                      }
+
+                      Item { width: 1; height: 4; visible: root.ciInstalled }
 
                       // The one switch for every graph: all dials, or all strips.
                       Rectangle {
