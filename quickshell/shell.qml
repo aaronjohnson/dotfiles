@@ -176,7 +176,10 @@ ShellRoot {
         running: true
         repeat: true
         triggeredOnStart: true
-        onTriggered: root.readBattery()
+        onTriggered: {
+            root.readBattery();
+            root.sampleSlow();
+        }
     }
 
     // ---- Brightness ----
@@ -238,8 +241,10 @@ ShellRoot {
         npuPm.reload();
         root.npuAwake = npuPm.text().trim() === "active";
         root.npuMHz = Number(npuFreq.text()) || 0;
-        if (root.npuLastBusy >= 0)
+        if (root.npuLastBusy >= 0) {
             root.npuLoad = Math.max(0, Math.min(1, (busy - root.npuLastBusy) / (root.netIntervalMs * 1000)));
+            root.npuHistory = pushHist(root.npuHistory, root.npuLoad, root.netSamples);
+        }
         root.npuLastBusy = busy;
     }
 
@@ -308,6 +313,67 @@ ShellRoot {
         if (root.cpuIds.length !== ids.length) root.cpuIds = ids;
     }
 
+    // ---- Slow histories ----
+    // Cheap readings kept all the time on the battery's 10 s tick, 180 samples
+    // (30 minutes): CPU package temperature, average CPU clock, battery power
+    // (+ charging, - draining) and fan speed. Wifi signal joins them from its
+    // own 20 s reader (90 samples, also 30 minutes).
+    property int slowSamples: 180
+    property var tempHistory: []         // deg C
+    property var clockHistory: []        // GHz, mean over all cores
+    property var powerHistory: []        // W, signed like batWatts
+    property var fanHistory: []          // rpm
+    property var wifiHistory: []         // 0-100, null = offline
+    property bool wifiTick: false        // the running wifi read is the 20 s one
+    property real cpuClockAvg: -1        // GHz
+    property int fanRpm: -1
+    property string fanPath: ""          // found at startup; cros_ec preferred
+
+    // The NPU's load on its 2 s tick (the counter read leaves it asleep).
+    property var npuHistory: []
+
+    FileView { id: fanFile; blockLoading: true; path: root.fanPath }
+
+    function pushHist(arr, v, n) {
+        return arr.concat([v]).slice(-n);
+    }
+
+    // Per-core clocks (MHz) from cpufreq, as [{ id, mhz, maxMhz }].
+    function readCpuFreqs() {
+        var freqs = [], inst = cpuFreqFiles.instances;
+        for (var i = 0; i < inst.length; i++) {
+            inst[i].cur.reload();
+            freqs.push({ id: inst[i].modelData, mhz: Number(inst[i].cur.text()) / 1000,
+                         maxMhz: Number(inst[i].max.text()) / 1000 });
+        }
+        return freqs;
+    }
+
+    function sampleSlow() {
+        var n = root.slowSamples;
+        if (root.cpuTempPath !== "") {
+            cpuTempFile.reload();
+            root.cpuTemp = Number(cpuTempFile.text()) / 1000;
+            root.tempHistory = pushHist(root.tempHistory, root.cpuTemp, n);
+        }
+        var f = readCpuFreqs();
+        if (f.length > 0) {
+            var sum = 0;
+            for (var i = 0; i < f.length; i++) sum += f[i].mhz;
+            root.cpuClockAvg = sum / f.length / 1000;
+            root.clockHistory = pushHist(root.clockHistory, root.cpuClockAvg, n);
+        }
+        if (root.batPercent >= 0) root.powerHistory = pushHist(root.powerHistory, root.batWatts, n);
+        if (root.fanPath !== "") {
+            fanFile.reload();
+            var rpm = parseInt(fanFile.text());
+            if (!isNaN(rpm)) {
+                root.fanRpm = rpm;
+                root.fanHistory = pushHist(root.fanHistory, rpm, n);
+            }
+        }
+    }
+
     // ---- Stats dropdown ----
     // Opened by clicking the network/memory/NPU area of the bar. Everything
     // below is read only while it is open: CPU clocks and temperature, the GPU,
@@ -316,6 +382,8 @@ ShellRoot {
     readonly property bool statsOpen: statsScreen !== ""
     onStatsOpenChanged: if (statsOpen) {
         gpuLastIdle = [];                // GPU busy is measured from now, not since the last open
+        gpuBusyHist = [];                // and its graphs start now too
+        gpuMhzHist = [];
         readDetails();
         if (!wifiReader.running) wifiReader.running = true;
     }
@@ -337,17 +405,22 @@ ShellRoot {
                   + "for c in /sys/class/drm/card[0-9]; do dev=$(readlink -f $c/device); "
                   + "echo \"DRV $(basename $(readlink -f $dev/driver))\"; "
                   + "for g in $dev/tile*/gt*; do [ -e $g/gtidle/idle_residency_ms ] && echo \"GT $g\"; done; done; "
-                  + "[ -r /sys/devices/cpu_core/cpus ] && echo \"PCORES $(cat /sys/devices/cpu_core/cpus)\""]
+                  + "[ -r /sys/devices/cpu_core/cpus ] && echo \"PCORES $(cat /sys/devices/cpu_core/cpus)\"; "
+                  + "for d in /sys/class/hwmon/hwmon*; do [ -r $d/fan1_input ] || continue; "
+                  + "[ \"$(cat $d/name)\" = cros_ec ] && echo \"FAN $d/fan1_input\" || echo \"FAN2 $d/fan1_input\"; done"]
         stdout: StdioCollector {
             onStreamFinished: {
-                var gts = [], lines = this.text.trim().split("\n");
+                var gts = [], fan2 = "", lines = this.text.trim().split("\n");
                 for (var i = 0; i < lines.length; i++) {
                     var sp = lines[i].indexOf(" "), key = lines[i].substring(0, sp), val = lines[i].substring(sp + 1);
                     if (key === "TEMP" && root.cpuTempPath === "") root.cpuTempPath = val;
                     else if (key === "DRV" && root.gpuDriver === "") root.gpuDriver = val;
                     else if (key === "GT") gts.push(val);
                     else if (key === "PCORES") root.cpuPCores = root.parseCpuList(val);
+                    else if (key === "FAN" && root.fanPath === "") root.fanPath = val;
+                    else if (key === "FAN2" && fan2 === "") fan2 = val;
                 }
+                if (root.fanPath === "") root.fanPath = fan2;   // any other fan, e.g. acpi_fan
                 root.gpuGts = gts;
             }
         }
@@ -391,17 +464,13 @@ ShellRoot {
     property real cpuTemp: -1            // deg C
     property var gpuStats: []            // [{ name, busy (-1 = not yet), mhz, maxMhz }]
     property var gpuLastIdle: []         // [idle ms, at ms] per GT
+    property var gpuBusyHist: []         // per GT: busy 0..1 history (dropdown open only)
+    property var gpuMhzHist: []          // per GT: clock history
     property real npuMemBytes: -1
     property int npuMaxMHz: 0
 
     function readDetails() {
-        var freqs = [], inst = cpuFreqFiles.instances;
-        for (var i = 0; i < inst.length; i++) {
-            inst[i].cur.reload();
-            freqs.push({ id: inst[i].modelData, mhz: Number(inst[i].cur.text()) / 1000,
-                         maxMhz: Number(inst[i].max.text()) / 1000 });
-        }
-        root.cpuFreqs = freqs;
+        root.cpuFreqs = readCpuFreqs();
 
         if (root.cpuTempPath !== "") {
             cpuTempFile.reload();
@@ -420,6 +489,14 @@ ShellRoot {
         }
         root.gpuStats = gpus;
         root.gpuLastIdle = lastIdle;
+        // Per-GT histories, only while the dropdown is open (null = no busy figure yet).
+        var bh = [], mh = [];
+        for (var m = 0; m < gpus.length; m++) {
+            bh.push(pushHist(root.gpuBusyHist[m] || [], gpus[m].busy < 0 ? null : gpus[m].busy, root.netSamples));
+            mh.push(pushHist(root.gpuMhzHist[m] || [], gpus[m].mhz, root.netSamples));
+        }
+        root.gpuBusyHist = bh;
+        root.gpuMhzHist = mh;
 
         if (root.npuPresent) {
             npuMem.reload();
@@ -451,87 +528,179 @@ ShellRoot {
         return h > 0 ? h + "h " + m + "m" : m > 0 ? m + "m " + s + "s" : s + "s";
     }
 
-    // Mirrored log-log dot plot: download rises above the center line,
-    // upload drops below it. Height is log(rate) on a fixed 100 B/s to
-    // 100 MB/s scale, so it never rescales. Time runs on a log axis too:
-    // the newest sample sits at the right edge and older ones crowd
-    // toward the left and fade, so the last few seconds get most of
-    // the width while still showing 5 minutes of history.
-    component NetGraph: Canvas {
-      property var themeColors: root.c
-      onThemeColorsChanged: requestPaint()   // redraw when light/dark flips
+    // Time series as a dot plot, the look of the network graph. Time runs on
+    // a log axis: the newest sample sits at the right edge and older ones crowd
+    // toward the left and fade, so the last few samples get most of the width
+    // while the whole history still shows. The newest dots glow.
+    // Value axis: linear from lo to hi (autoRange grows it in rangeStep steps
+    // to fit), or log10 from 10^logLo to 10^logHi (a zero then draws nothing:
+    // idle). mirrored puts zero in the middle: positive values rise in tint,
+    // negative ones (and values2, e.g. upload) drop in negTint. null = no sample.
+    // valueText sits at the right end, level with the newest dot; caption at
+    // the top left. While live is false (dropdown closed) it never paints.
+    component TimeGraph: Item {
+      id: tg
+      property var values: []
+      property var values2: []
+      property int samples: root.netSamples   // the history the width covers
+      property bool mirrored: false
+      property bool logScale: false
+      property real logLo: 0
+      property real logHi: 1
+      property real lo: 0
+      property real hi: 1
+      property bool autoRange: false
+      property real rangeStep: 1
+      property var guides: []                 // faint dotted lines at these values
+      property string tint: root.c.violet
+      property string negTint: tint
+      property string caption: ""
+      property string valueText: ""
+      property int valueWidth: valueText !== "" ? 50 : 0
+      property bool live: true
 
-      // Repaint only when a new sample arrives (every 2s), never on a loop.
-      property var rx: root.rxHistory
-      property var tx: root.txHistory
-      onRxChanged: requestPaint()
+      // Repaint only when a sample arrives (or the theme flips), never on a loop.
+      onValuesChanged: if (live) graphCanvas.requestPaint()
+      onLiveChanged: if (live) graphCanvas.requestPaint()
 
-      readonly property real logMin: 2   // 10^2 = 100 B/s
-      readonly property real logMax: 8   // 10^8 = 100 MB/s
-
-      onPaint: {
-        var ctx = getContext("2d");
-        ctx.clearRect(0, 0, width, height);
-        var mid = height / 2;
-        var half = mid - 3;               // leave room for the glow
-        var maxAge = root.netSamples;
-        var xSpan = width - 4;
-
-        function xAt(age) {
-          return 2 + xSpan * (1 - Math.log(1 + age) / Math.log(1 + maxAge));
-        }
-        function reach(rate) {            // 0..1 up the log scale
-          if (rate <= 0) return 0;
-          var f = (Math.log(rate) / Math.LN10 - logMin) / (logMax - logMin);
-          return Math.max(0, Math.min(1, f));
-        }
-
-        // Faint guides at 1 KB/s and 1 MB/s, above and below.
-        ctx.fillStyle = root.alpha(root.c.dim, 0.35);
-        [3, 6].forEach(function (d) {
-          var off = half * (d - logMin) / (logMax - logMin);
-          for (var x = 2; x < width; x += 4) {
-            ctx.fillRect(x, mid - off, 1, 1);
-            ctx.fillRect(x, mid + off, 1, 1);
+      readonly property var range: {
+        var a = lo, b = hi;
+        if (autoRange) {
+          for (var i = 0; i < values.length; i++) {
+            var v = values[i];
+            if (typeof v !== "number" || !isFinite(v)) continue;
+            if (v > b) b = Math.ceil(v / rangeStep) * rangeStep;
+            if (v < a) a = Math.floor(v / rangeStep) * rangeStep;
           }
-        });
-        ctx.fillStyle = root.alpha(root.c.dim, 0.6);
-        ctx.fillRect(0, mid - 0.5, width, 1);
+        }
+        return { lo: a, hi: Math.max(b, a + 1e-9) };
+      }
+      readonly property var latest: {
+        var v = values.length ? values[values.length - 1] : null;
+        return typeof v === "number" && isFinite(v) ? v : null;
+      }
 
-        function dots(data, sign, rgb) {
-          // Oldest first, so newer dots paint over the crowded history.
-          for (var i = 0; i < data.length; i++) {
-            var age = data.length - 1 - i;
-            var f = reach(data[i]);
-            if (f === 0) continue;        // idle: nothing to draw
-            var fresh = age < 3;
-            var r = fresh ? 2.2 - age * 0.4 : 1.1;
-            var alpha = 1 - 0.8 * Math.sqrt(age / maxAge);
-            var x = xAt(age), y = mid - sign * f * half;
-            if (fresh) {                  // soft halo behind the newest dots
-              var g = ctx.createRadialGradient(x, y, 0, x, y, r * 3);
-              g.addColorStop(0, root.alpha(rgb, 0.5));
-              g.addColorStop(1, root.alpha(rgb, 0));
-              ctx.fillStyle = g;
+      // 0..1 along the value axis (of |v| when mirrored or log).
+      function reach(v) {
+        var f;
+        if (logScale) {
+          var m = Math.abs(v);
+          if (m <= 0) return 0;
+          f = (Math.log(m) / Math.LN10 - logLo) / (logHi - logLo);
+        } else if (mirrored) {
+          f = Math.abs(v) / Math.max(Math.abs(range.lo), Math.abs(range.hi));
+        } else {
+          f = (v - range.lo) / (range.hi - range.lo);
+        }
+        return Math.max(0, Math.min(1, f));
+      }
+      function yOf(v, h) {
+        if (mirrored) {
+          var mid = h / 2;
+          return mid - (v < 0 ? -1 : 1) * reach(v) * (mid - 3);   // leave room for the glow
+        }
+        return h - 3 - reach(v) * (h - 6);
+      }
+
+      Canvas {
+        id: graphCanvas
+        width: tg.width - tg.valueWidth
+        height: tg.height
+        property var themeColors: root.c
+        onThemeColorsChanged: requestPaint()   // redraw when light/dark flips
+
+        onPaint: {
+          var ctx = getContext("2d");
+          ctx.clearRect(0, 0, width, height);
+          var h = height, maxAge = tg.samples, xSpan = width - 4;
+          function xAt(age) {
+            return 2 + xSpan * (1 - Math.log(1 + age) / Math.log(1 + maxAge));
+          }
+
+          ctx.fillStyle = root.alpha(root.c.dim, 0.35);
+          tg.guides.forEach(function (g) {
+            var ys = tg.mirrored ? [tg.yOf(g, h), tg.yOf(-g, h)] : [tg.yOf(g, h)];
+            for (var x = 2; x < width; x += 4)
+              ys.forEach(function (y) { ctx.fillRect(x, Math.round(y), 1, 1); });
+          });
+          ctx.fillStyle = root.alpha(root.c.dim, 0.6);
+          ctx.fillRect(0, tg.mirrored ? h / 2 - 0.5 : h - 1.5, width, 1);
+
+          function dots(data, flip) {
+            // Oldest first, so newer dots paint over the crowded history.
+            for (var i = 0; i < data.length; i++) {
+              var v = data[i];
+              if (typeof v !== "number" || !isFinite(v)) continue;
+              if (flip) v = -v;
+              if (tg.logScale && tg.reach(v) === 0) continue;   // idle: nothing to draw
+              var age = data.length - 1 - i;
+              var fresh = age < 3;
+              var r = fresh ? 2.2 - age * 0.4 : 1.1;
+              var alpha = 1 - 0.8 * Math.sqrt(age / maxAge);
+              var rgb = v < 0 ? tg.negTint : tg.tint;
+              var x = xAt(age), y = tg.yOf(v, h);
+              if (fresh) {                  // soft halo behind the newest dots
+                var g = ctx.createRadialGradient(x, y, 0, x, y, r * 3);
+                g.addColorStop(0, root.alpha(rgb, 0.5));
+                g.addColorStop(1, root.alpha(rgb, 0));
+                ctx.fillStyle = g;
+                ctx.beginPath();
+                ctx.arc(x, y, r * 3, 0, 2 * Math.PI);
+                ctx.fill();
+              }
+              ctx.fillStyle = root.alpha(rgb, alpha);
               ctx.beginPath();
-              ctx.arc(x, y, r * 3, 0, 2 * Math.PI);
+              ctx.arc(x, y, r, 0, 2 * Math.PI);
               ctx.fill();
             }
-            ctx.fillStyle = root.alpha(rgb, alpha);
-            ctx.beginPath();
-            ctx.arc(x, y, r, 0, 2 * Math.PI);
-            ctx.fill();
           }
+          dots(tg.values2, true);
+          dots(tg.values, false);
         }
+      }
 
-        dots(tx, -1, root.c.orange);    // peach, below
-        dots(rx, 1, root.c.blue);     // blue, above
+      Text {
+        visible: tg.valueText !== ""
+        x: graphCanvas.width + 4
+        y: {
+          var cy = tg.latest === null ? tg.height / 2 : tg.yOf(tg.latest, tg.height);
+          return Math.max(-2, Math.min(tg.height - height + 2, cy - height / 2));
+        }
+        text: tg.valueText
+        color: tg.latest !== null && tg.latest < 0 ? tg.negTint : tg.tint
+        font.pixelSize: 11
+        font.bold: true
+        font.family: "monospace"
+      }
+      Text {
+        visible: tg.caption !== ""
+        x: 3
+        y: 0
+        text: tg.caption
+        color: root.c.muted
+        font.pixelSize: 9
+        font.family: "monospace"
       }
     }
 
+    // Network: mirrored log-log. Download rises above the center line, upload
+    // drops below it, on a fixed 100 B/s to 100 MB/s scale so it never
+    // rescales; dotted guides at 1 KB/s and 1 MB/s.
+    component NetGraph: TimeGraph {
+      values: root.rxHistory
+      values2: root.txHistory
+      mirrored: true
+      logScale: true
+      logLo: 2                                // 10^2 = 100 B/s
+      logHi: 8                                // 10^8 = 100 MB/s
+      guides: [1e3, 1e6]
+      tint: root.c.blue
+      negTint: root.c.orange
+    }
+
     // A 0..1 history as a line over a soft fill, newest sample at the right
-    // edge with a glow, oldest fading out to the left. Linear time: memory and
-    // CPU move slowly enough that the network graph's log axis isn't needed.
+    // edge with a glow, oldest fading out to the left. Linear time. Used for
+    // the bar's tiny memory sparkline, where a dot plot would be too busy.
     component HistoryGraph: Canvas {
       property var themeColors: root.c
       onThemeColorsChanged: requestPaint()   // redraw when light/dark flips
@@ -940,6 +1109,11 @@ ShellRoot {
                 }
                 root.wifiSignal = signal;
                 root.wifiSsid = ssid;
+                // History only from the 20 s timer's reads, not hover/open refreshes.
+                if (root.wifiTick) {
+                    root.wifiTick = false;
+                    root.wifiHistory = root.pushHist(root.wifiHistory, signal >= 0 ? signal : null, root.slowSamples / 2);
+                }
             }
         }
     }
@@ -962,7 +1136,10 @@ ShellRoot {
         running: true
         repeat: true
         triggeredOnStart: true
-        onTriggered: wifiReader.running = true
+        onTriggered: {
+            root.wifiTick = true;
+            wifiReader.running = true;
+        }
     }
 
     // ---- Autohide ----
@@ -1470,8 +1647,11 @@ ShellRoot {
                 anchor.gravity: Edges.Bottom | Edges.Right
                 anchor.margins.top: 6
                 visible: statsArea.open
-                implicitWidth: 452
-                implicitHeight: statsCol.implicitHeight + 24
+                // Two columns of graphs: wifi, network, memory and NPU on the
+                // left; CPU, fan, battery and GPU on the right.
+                property int colWidth: 400
+                implicitWidth: colWidth * 2 + 24 + 28
+                implicitHeight: Math.max(statsColL.implicitHeight, statsColR.implicitHeight) + 24
                 color: "transparent"
 
                 // Core types: P-cores from the kernel's hybrid PMU list; among
@@ -1489,6 +1669,11 @@ ShellRoot {
                   return f[i].maxMhz === low && low < top ? "LP" : "E";
                 }
 
+                function signedWatts(w) {
+                  w = Math.round(w);
+                  return w > 0 ? "+" + w + " W" : w < 0 ? "−" + (-w) + " W" : "0 W";
+                }
+
                 Rectangle {
                   anchors.fill: parent
                   color: root.c.bg
@@ -1497,184 +1682,411 @@ ShellRoot {
 
                   HoverHandler { id: statsPopupHover }
 
-                  Column {
-                    id: statsCol
+                  Row {
                     x: 14
                     y: 12
-                    width: parent.width - 28
-                    spacing: 5
+                    spacing: 24
 
-                    // -- Wifi --
-                    StatTitle { text: "WIFI"; color: root.c.cyan }
-                    StatText {
-                      text: root.wifiSignal < 0 ? "offline"
-                            : root.wifiSsid + "   " + root.wifiSignal + "%  " + root.wifiDbm + " dBm   tx "
-                              + Math.round(root.wifiBitrate) + " Mbit/s"
-                      color: root.c.fg
-                    }
-                    Meter { width: parent.width; value: Math.max(0, root.wifiSignal) / 100; tint: root.c.cyan }
-                    StatText {
-                      visible: root.wifiSignal >= 0 && root.wifiLinks.length > 0
-                      text: {
-                        var out = [];
-                        for (var i = 0; i < root.wifiLinks.length; i++) {
-                          var l = root.wifiLinks[i];
-                          out.push((l.active ? "● " : "○ ") + "link " + l.id + "  "
-                                   + (root.bandOf(l.freq) + " GHz").padEnd(7) + l.freq + " MHz"
-                                   + (l.active ? "  " + root.wifiWidth + " MHz wide" : "  idle"));
+                    Column {
+                      id: statsColL
+                      width: statsPopup.colWidth
+                      spacing: 5
+
+                      // -- Wifi --
+                      StatTitle { text: "WIFI"; color: root.c.cyan }
+                      StatText {
+                        text: root.wifiSignal < 0 ? "offline"
+                              : root.wifiSsid + "   " + root.wifiDbm + " dBm   tx "
+                                + Math.round(root.wifiBitrate) + " Mbit/s"
+                        color: root.c.fg
+                      }
+                      TimeGraph {
+                        width: parent.width
+                        height: 34
+                        live: statsArea.open
+                        values: root.wifiHistory
+                        samples: root.slowSamples / 2
+                        lo: 0
+                        hi: 100
+                        guides: [25, 50, 75]
+                        tint: root.c.cyan
+                        caption: "signal · 30 min"
+                        valueText: root.wifiSignal >= 0 ? root.wifiSignal + "%" : "off"
+                      }
+                      StatText {
+                        visible: root.wifiSignal >= 0 && root.wifiLinks.length > 0
+                        text: {
+                          var out = [];
+                          for (var i = 0; i < root.wifiLinks.length; i++) {
+                            var l = root.wifiLinks[i];
+                            out.push((l.active ? "● " : "○ ") + "link " + l.id + "  "
+                                     + (root.bandOf(l.freq) + " GHz").padEnd(7) + l.freq + " MHz"
+                                     + (l.active ? "  " + root.wifiWidth + " MHz wide" : "  idle"));
+                          }
+                          return out.join("\n");
                         }
-                        return out.join("\n");
+                      }
+
+                      Item { width: 1; height: 4 }
+
+                      // -- Network --
+                      StatTitle { text: "NETWORK"; color: root.c.blue }
+                      StatText {
+                        text: "↓ " + (root.formatRate(root.rxRate) + "/s").padEnd(8)
+                              + "↑ " + (root.formatRate(root.txRate) + "/s").padEnd(8)
+                              + "boot ↓ " + root.formatBytes(Math.max(0, root.lastRx))
+                              + " ↑ " + root.formatBytes(Math.max(0, root.lastTx))
+                        color: root.c.fg
+                      }
+                      NetGraph { width: parent.width; height: 56; live: statsArea.open }
+                      StatText {
+                        text: "log rate: dotted at 1 KB/s and 1 MB/s · log time: 5 min"
+                        font.pixelSize: 10
+                        color: root.c.muted
+                      }
+
+                      Item { width: 1; height: 4 }
+
+                      // -- Memory --
+                      StatTitle { text: "MEMORY"; color: root.c.violet }
+                      StatText {
+                        property var m: root.memInfo
+                        text: m.MemTotal > 0
+                              ? "used " + root.formatKb(root.memUsedKb) + " of " + root.formatKb(m.MemTotal)
+                                + "   available " + root.formatKb(m.MemAvailable)
+                                + "\ncached " + root.formatKb(m.Cached) + "   buffers " + root.formatKb(m.Buffers)
+                                + "   swap " + root.formatKb(m.SwapTotal - m.SwapFree) + " of " + root.formatKb(m.SwapTotal)
+                              : "…"
+                        color: root.c.fg
+                      }
+                      TimeGraph {
+                        width: parent.width
+                        height: 38
+                        live: statsArea.open
+                        values: root.memHistory
+                        guides: [0.25, 0.5, 0.75]
+                        tint: root.c.violet
+                        caption: "used · 5 min"
+                        valueText: root.memTotalKb > 0 ? Math.round(root.memUsedKb / root.memTotalKb * 100) + "%" : ""
+                      }
+
+                      Item { width: 1; height: 4 }
+
+                      // -- NPU --
+                      StatTitle { text: "NPU"; color: root.c.green; visible: root.npuPresent }
+                      StatText {
+                        visible: root.npuPresent
+                        text: (root.npuAwake ? "awake" : "asleep") + "   " + root.npuMHz + " of " + root.npuMaxMHz + " MHz"
+                              + "\nbusy since boot " + root.formatDuration(Math.max(0, root.npuLastBusy) / 1e6)
+                              + "   memory " + (root.npuMemBytes >= 0 ? root.formatBytes(root.npuMemBytes) : "…")
+                        color: root.c.fg
+                      }
+                      TimeGraph {
+                        visible: root.npuPresent
+                        width: parent.width
+                        height: 34
+                        live: statsArea.open
+                        values: root.npuHistory
+                        logScale: true
+                        logLo: -3                       // 0.1% .. 100%
+                        logHi: 0
+                        guides: [0.01, 0.1]
+                        tint: root.c.green
+                        caption: "load · log, dotted 1% 10% · 5 min"
+                        valueText: Math.round(root.npuLoad * 100) + "%"
                       }
                     }
 
-                    Item { width: 1; height: 4 }
+                    Column {
+                      id: statsColR
+                      width: statsPopup.colWidth
+                      spacing: 5
+                      property real half: (width - 12) / 2
 
-                    // -- Network --
-                    StatTitle { text: "NETWORK"; color: root.c.blue }
-                    StatText {
-                      text: "↓ " + (root.formatRate(root.rxRate) + "/s").padEnd(9)
-                            + "↑ " + (root.formatRate(root.txRate) + "/s").padEnd(10)
-                            + "since boot ↓ " + root.formatBytes(Math.max(0, root.lastRx))
-                            + "  ↑ " + root.formatBytes(Math.max(0, root.lastTx))
-                      color: root.c.fg
-                    }
-                    NetGraph { width: parent.width; height: 56 }
-                    StatText {
-                      text: "log scale: dotted lines at 1 KB/s and 1 MB/s, newest at right"
-                      font.pixelSize: 10
-                      color: root.c.muted
-                    }
-
-                    Item { width: 1; height: 4 }
-
-                    // -- Memory --
-                    StatTitle { text: "MEMORY"; color: root.c.violet }
-                    StatText {
-                      property var m: root.memInfo
-                      text: m.MemTotal > 0
-                            ? "used " + root.formatKb(root.memUsedKb) + " of " + root.formatKb(m.MemTotal)
-                              + " (" + Math.round(root.memUsedKb / m.MemTotal * 100) + "%)   available "
-                              + root.formatKb(m.MemAvailable)
-                              + "\ncached " + root.formatKb(m.Cached) + "   buffers " + root.formatKb(m.Buffers)
-                              + "   swap " + root.formatKb(m.SwapTotal - m.SwapFree) + " of " + root.formatKb(m.SwapTotal)
-                            : "…"
-                      color: root.c.fg
-                    }
-                    HistoryGraph {
-                      width: parent.width
-                      height: 40
-                      values: root.memHistory
-                      tint: root.c.violet
-                      guides: true
-                    }
-
-                    Item { width: 1; height: 4 }
-
-                    // -- CPU --
-                    StatTitle { text: "CPU"; color: root.c.yellow }
-                    StatText {
-                      text: {
-                        var f = root.cpuFreqs, sum = 0, top = 0;
-                        for (var i = 0; i < f.length; i++) { sum += f[i].mhz; top = Math.max(top, f[i].mhz); }
-                        return "load " + Math.round(root.cpuLoad * 100) + "%"
-                               + (root.cpuTemp >= 0 ? "   package " + Math.round(root.cpuTemp) + "°C" : "")
-                               + (f.length ? "   clock avg " + (sum / f.length / 1000).toFixed(1)
-                                             + " GHz, top " + (top / 1000).toFixed(1) + " GHz" : "");
+                      // -- CPU --
+                      StatTitle { text: "CPU"; color: root.c.yellow }
+                      StatText {
+                        text: {
+                          var f = root.cpuFreqs, top = 0;
+                          for (var i = 0; i < f.length; i++) top = Math.max(top, f[i].mhz);
+                          return "load " + Math.round(root.cpuLoad * 100) + "%"
+                                 + (f.length ? "   top core " + (top / 1000).toFixed(1) + " GHz" : "")
+                                 + "   ticks: clock";
+                        }
+                        color: root.c.fg
                       }
-                      color: root.c.fg
-                    }
-                    // One bar per core (load), its clock in GHz underneath, and
-                    // the core type (P / E / LP-E) beneath the first of each group.
-                    Row {
-                      spacing: 4
-                      Repeater {
-                        model: root.cpuIds.length
-                        Column {
-                          required property int index
-                          property string kind: statsPopup.coreKind(index)
-                          property bool groupStart: index === 0 || statsPopup.coreKind(index - 1) !== kind
-                          spacing: 1
-                          width: 22.5
-                          Rectangle {
-                            width: parent.width
-                            height: 22
-                            radius: 2
-                            color: root.c.surface
-                            Rectangle {
-                              anchors.bottom: parent.bottom
-                              width: parent.width
-                              height: parent.height * (root.cpuCoreLoad[index] || 0)
-                              radius: 2
-                              color: root.c.yellow
-                              opacity: 0.85
+                      // Core rings: one ring per core tier, P innermost, then E,
+                      // then LP-E. Each core is an arc segment, a gauge filling
+                      // clockwise with its load (green, yellow, orange, red as
+                      // it climbs). The tick just outside a segment grows with
+                      // that core's clock as a share of its own top clock. The
+                      // gap at the top holds the tier labels; overall load and
+                      // package temperature sit in the middle.
+                      Row {
+                        spacing: 12
+
+                        Item {
+                          id: coreRings
+                          width: 150
+                          height: 150
+
+                          Canvas {
+                            anchors.fill: parent
+                            property var themeColors: root.c
+                            onThemeColorsChanged: requestPaint()   // redraw when light/dark flips
+                            // Repaint only on new samples, and only while open.
+                            property var loads: root.cpuCoreLoad
+                            property var freqs: root.cpuFreqs
+                            property bool live: statsArea.open
+                            onLoadsChanged: if (live) requestPaint()
+                            onFreqsChanged: if (live) requestPaint()
+                            onLiveChanged: if (live) requestPaint()
+
+                            function loadColor(l) {
+                              return l < 0.25 ? root.c.green : l < 0.5 ? root.c.yellow
+                                   : l < 0.75 ? root.c.orange : root.c.red;
+                            }
+
+                            onPaint: {
+                              var ctx = getContext("2d");
+                              ctx.clearRect(0, 0, width, height);
+                              var cx = width / 2, cy = height / 2;
+                              var order = ["P", "E", "LP", ""], rings = {};
+                              for (var i = 0; i < root.cpuIds.length; i++) {
+                                var k = statsPopup.coreKind(i);
+                                (rings[k] = rings[k] || []).push(i);
+                              }
+                              var wedge = 0.5;                 // label gap at the top, radians
+                              var start0 = -Math.PI / 2 + wedge / 2, sweep = 2 * Math.PI - wedge;
+                              var lw = 8, r = 30;
+                              ctx.lineCap = "butt";
+                              ctx.textAlign = "center";
+                              ctx.textBaseline = "middle";
+                              ctx.font = "bold 8px monospace";
+                              for (var o = 0; o < order.length; o++) {
+                                var cores = rings[order[o]];
+                                if (!cores) continue;
+                                var n = cores.length, gap = 0.07;
+                                var seg = sweep / n;
+                                for (var j = 0; j < n; j++) {
+                                  var core = cores[j];
+                                  var a0 = start0 + j * seg + gap / 2, span = seg - gap;
+                                  ctx.lineWidth = lw;
+                                  ctx.strokeStyle = root.alpha(root.c.dim, 0.22);   // track
+                                  ctx.beginPath();
+                                  ctx.arc(cx, cy, r, a0, a0 + span, false);
+                                  ctx.stroke();
+                                  var l = Math.max(0, Math.min(1, root.cpuCoreLoad[core] || 0));
+                                  if (l > 0.005) {
+                                    ctx.strokeStyle = loadColor(l);
+                                    ctx.beginPath();
+                                    ctx.arc(cx, cy, r, a0, a0 + Math.max(0.03, span * l), false);
+                                    ctx.stroke();
+                                  }
+                                  var f = root.cpuFreqs[core];
+                                  if (f && f.maxMhz > 0) {           // clock tick
+                                    var share = Math.max(0, Math.min(1, f.mhz / f.maxMhz));
+                                    var am = a0 + span / 2, r0 = r + lw / 2 + 1, r1 = r0 + 1 + 5 * share;
+                                    ctx.strokeStyle = root.alpha(root.c.fg, 0.75);
+                                    ctx.lineWidth = 1.5;
+                                    ctx.beginPath();
+                                    ctx.moveTo(cx + r0 * Math.cos(am), cy + r0 * Math.sin(am));
+                                    ctx.lineTo(cx + r1 * Math.cos(am), cy + r1 * Math.sin(am));
+                                    ctx.stroke();
+                                  }
+                                }
+                                if (order[o] !== "") {               // tier label in the top gap
+                                  ctx.fillStyle = root.c.muted;
+                                  ctx.fillText(order[o], cx, cy - r);
+                                }
+                                r += 16;
+                              }
                             }
                           }
-                          Text {
-                            anchors.horizontalCenter: parent.horizontalCenter
-                            text: root.cpuFreqs[index] ? (root.cpuFreqs[index].mhz / 1000).toFixed(1) : ""
-                            color: root.c.dim
-                            font.pixelSize: 9
-                            font.family: "monospace"
+
+                          Column {
+                            anchors.centerIn: parent
+                            Text {
+                              anchors.horizontalCenter: parent.horizontalCenter
+                              text: Math.round(root.cpuLoad * 100) + "%"
+                              color: root.c.fg
+                              font.pixelSize: 15
+                              font.bold: true
+                              font.family: "monospace"
+                            }
+                            Text {
+                              anchors.horizontalCenter: parent.horizontalCenter
+                              visible: root.cpuTemp >= 0
+                              text: Math.round(root.cpuTemp) + "°C"
+                              color: root.c.red
+                              font.pixelSize: 10
+                              font.family: "monospace"
+                            }
                           }
-                          Text {
-                            text: parent.groupStart ? parent.kind : " "
-                            color: root.c.muted
-                            font.pixelSize: 9
-                            font.bold: true
+                        }
+
+                        Column {
+                          width: statsColR.width - coreRings.width - 12
+                          spacing: 5
+                          TimeGraph {
+                            width: parent.width
+                            height: 46
+                            live: statsArea.open
+                            values: root.cpuHistory
+                            guides: [0.25, 0.5, 0.75]
+                            tint: root.c.yellow
+                            caption: "load · 5 min"
+                            valueText: Math.round(root.cpuLoad * 100) + "%"
+                          }
+                          TimeGraph {
+                            width: parent.width
+                            height: 46
+                            live: statsArea.open
+                            values: root.tempHistory
+                            samples: root.slowSamples
+                            lo: 30
+                            hi: 100
+                            autoRange: true
+                            rangeStep: 10
+                            guides: [50, 70, 90]
+                            tint: root.c.red
+                            caption: "package · 30 min"
+                            valueText: root.cpuTemp >= 0 ? Math.round(root.cpuTemp) + " °C" : ""
+                          }
+                          TimeGraph {
+                            width: parent.width
+                            height: 46
+                            live: statsArea.open
+                            values: root.clockHistory
+                            samples: root.slowSamples
+                            lo: 0
+                            hi: 4
+                            autoRange: true
+                            guides: [1, 2, 3]
+                            tint: root.c.yellow
+                            caption: "avg clock · 30 min"
+                            valueText: root.cpuClockAvg >= 0 ? root.cpuClockAvg.toFixed(1) + " GHz" : ""
                           }
                         }
                       }
-                    }
-                    HistoryGraph {
-                      width: parent.width
-                      height: 32
-                      values: root.cpuHistory
-                      tint: root.c.yellow
-                      guides: true
-                    }
 
-                    Item { width: 1; height: 4 }
+                      Item { width: 1; height: 4 }
 
-                    // -- GPU --
-                    StatTitle {
-                      text: "GPU" + (root.gpuDriver !== "" ? "  (" + root.gpuDriver + ")" : "")
-                      color: root.c.orange
-                    }
-                    StatText {
-                      visible: root.gpuStats.length === 0
-                      text: "no GPU idle/frequency counters found"
-                    }
-                    Repeater {
-                      model: root.gpuStats
-                      Column {
-                        required property var modelData
-                        width: statsCol.width
-                        spacing: 3
-                        StatText {
-                          property string role: modelData.name.endsWith("-rc") ? "render" : modelData.name.endsWith("-mc") ? "media" : ""
-                          text: (modelData.name + " " + role).padEnd(14)
-                                + ("busy " + (modelData.busy < 0 ? "…" : Math.round(modelData.busy * 100) + "%")).padEnd(11)
-                                + (modelData.mhz > 0 ? modelData.mhz + " MHz" : "idle (C6)")
-                                + " of " + modelData.maxMhz + " MHz"
-                          color: root.c.fg
+                      // -- Fan and battery, side by side --
+                      Row {
+                        spacing: 12
+                        Column {
+                          width: statsColR.half
+                          spacing: 5
+                          visible: root.fanPath !== ""
+                          StatTitle { text: "FAN"; color: root.c.cyan }
+                          TimeGraph {
+                            width: parent.width
+                            height: 38
+                            live: statsArea.open
+                            values: root.fanHistory
+                            samples: root.slowSamples
+                            lo: 0
+                            hi: 6000
+                            autoRange: true
+                            rangeStep: 1000
+                            guides: [2000, 4000]
+                            tint: root.c.cyan
+                            valueWidth: 58
+                            caption: "rpm · 30 min"
+                            valueText: root.fanRpm >= 0 ? root.fanRpm + " rpm" : ""
+                          }
                         }
-                        Meter { width: parent.width; value: Math.max(0, modelData.busy); tint: root.c.orange }
+                        Column {
+                          width: statsColR.half
+                          spacing: 5
+                          visible: root.batPercent >= 0
+                          StatTitle {
+                            text: "BATTERY " + root.batPercent + "%"
+                                  + (root.chargerWatts > 0 ? "  ⚡" + Math.round(root.chargerWatts) + " W" : "")
+                            color: root.c.green
+                          }
+                          // Charging rises above the line in green, draining drops below in orange.
+                          TimeGraph {
+                            width: parent.width
+                            height: 38
+                            live: statsArea.open
+                            values: root.powerHistory
+                            samples: root.slowSamples
+                            mirrored: true
+                            logScale: true
+                            logLo: 0                    // 1 W .. 100 W
+                            logHi: 2
+                            guides: [10]
+                            tint: root.c.green
+                            negTint: root.c.orange
+                            caption: "± W, log · 30 min"
+                            valueText: statsPopup.signedWatts(root.batWatts)
+                          }
+                        }
+                      }
+
+                      Item { width: 1; height: 4 }
+
+                      // -- GPU: sampled only while this is open, so its graphs start then --
+                      StatTitle {
+                        text: "GPU" + (root.gpuDriver !== "" ? "  (" + root.gpuDriver + ")" : "")
+                        color: root.c.orange
+                      }
+                      StatText {
+                        visible: root.gpuStats.length === 0
+                        text: "no GPU idle/frequency counters found"
+                      }
+                      Repeater {
+                        model: root.gpuStats
+                        Column {
+                          required property var modelData
+                          required property int index
+                          width: statsColR.width
+                          spacing: 3
+                          StatText {
+                            property string role: modelData.name.endsWith("-rc") ? "render" : modelData.name.endsWith("-mc") ? "media" : ""
+                            text: (modelData.name + " " + role).padEnd(14)
+                                  + (modelData.mhz > 0 ? "" : "idle (C6)   ") + "max " + modelData.maxMhz + " MHz"
+                            color: root.c.fg
+                          }
+                          Row {
+                            spacing: 12
+                            TimeGraph {
+                              width: statsColR.half
+                              height: 30
+                              live: statsArea.open
+                              values: root.gpuBusyHist[index] || []
+                              logScale: true
+                              logLo: -3
+                              logHi: 0
+                              guides: [0.01, 0.1]
+                              tint: root.c.orange
+                              caption: "busy · log"
+                              valueText: modelData.busy < 0 ? "…" : Math.round(modelData.busy * 100) + "%"
+                            }
+                            TimeGraph {
+                              width: statsColR.half
+                              height: 30
+                              live: statsArea.open
+                              values: root.gpuMhzHist[index] || []
+                              lo: 0
+                              hi: Math.max(1, modelData.maxMhz)
+                              guides: [modelData.maxMhz / 2]
+                              tint: root.c.orange
+                              valueWidth: 58
+                              caption: "clock"
+                              valueText: modelData.mhz > 0 ? modelData.mhz + " MHz" : "C6"
+                            }
+                          }
+                        }
+                      }
+                      StatText {
+                        text: "GPU graphs: since this opened, 2 s steps"
+                        font.pixelSize: 10
+                        color: root.c.muted
                       }
                     }
-
-                    Item { width: 1; height: 4 }
-
-                    // -- NPU --
-                    StatTitle { text: "NPU"; color: root.c.green; visible: root.npuPresent }
-                    StatText {
-                      visible: root.npuPresent
-                      text: (root.npuAwake ? "awake" : "asleep") + "   load " + Math.round(root.npuLoad * 100) + "%   "
-                            + root.npuMHz + " of " + root.npuMaxMHz + " MHz"
-                            + "\nbusy since boot " + root.formatDuration(Math.max(0, root.npuLastBusy) / 1e6)
-                            + "   memory " + (root.npuMemBytes >= 0 ? root.formatBytes(root.npuMemBytes) : "…")
-                      color: root.c.fg
-                    }
-                    Meter { visible: root.npuPresent; width: parent.width; value: root.npuLoad; tint: root.c.green }
                   }
                 }
               }
