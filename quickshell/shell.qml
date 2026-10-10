@@ -12,6 +12,20 @@ ShellRoot {
     // These live on ShellRoot (not inside the per-screen PanelWindow) so the
     // timers/readers run once no matter how many monitors you have.
 
+    // ---- Dial laps: tune the spirographs here ----
+    // On a polar-clock graph one revolution lasts this many seconds. When that
+    // is shorter than the graph's history (30 minutes for temperature, clock,
+    // fan and power), the history wraps round as several overlapping laps,
+    // older laps fainter, like a spirograph. Graphs not listed make one lap
+    // over their whole history. Keys are the graphs' keys in the dropdown:
+    // wifi, net, mem, npu, cpu, temp, clock, fan, power, gpu-busy-N, gpu-clock-N.
+    property var dialPeriods: ({
+        temp: 300,                       // CPU package temperature: 5 min laps (6 laps)
+        fan: 300,                        // fan speed: 5 min laps (6 laps)
+        clock: 120,                      // average CPU clock: 2 min laps (15 laps)
+        power: 600                       // battery power: 10 min laps (3 laps)
+    })
+
     property int netSamples: 150         // sparkline history (150 x 2s = 5 minutes)
     property int netIntervalMs: 2000
     property var rxHistory: []           // bytes/sec, oldest first
@@ -549,12 +563,13 @@ ShellRoot {
     //    edge and older ones crowd toward the left and fade, so the last few
     //    samples get most of the width while the whole history still shows.
     //    valueText sits at the right end, level with the newest dot.
-    //  - Polar clock: a full turn is the whole history. "Now" is the faint hand
-    //    at 12 o'clock and older samples trail anticlockwise behind it, like
-    //    the wake of a clock hand; rim ticks mark every 5 minutes (30-minute
-    //    graphs) or every minute. Radius is the value, from an inner ring (so
-    //    old points don't collapse into the centre) out to the rim; mirrored
-    //    values swing outward (positive) or inward (negative) from a zero ring.
+    //  - Polar clock: a full turn is one period (root.dialPeriods; by default the
+    //    whole history, else several overlapping laps). "Now" is the faint hand at
+    //    12 o'clock and older samples trail anticlockwise behind it, like the wake
+    //    of a clock hand; rim ticks mark 5 min, 1 min or 30 s. Radius is the
+    //    value, from an inner ring (so old points don't collapse into the centre)
+    //    out to the rim; mirrored values swing outward (positive) or inward
+    //    (negative) from a zero ring.
     //    valueText sits in the centre.
     // Value axis: linear from lo to hi (autoRange grows it in rangeStep steps
     // to fit), or log10 from 10^logLo to 10^logHi (a zero then draws nothing:
@@ -566,7 +581,10 @@ ShellRoot {
       property var values: []
       property var values2: []
       property int samples: root.netSamples   // the history the graph covers
-      property int windowMinutes: 5           // how long that is, for the clock's rim ticks
+      property int windowMinutes: 5           // how long that is
+      // Polar: seconds per revolution (root.dialPeriods, else the whole window).
+      readonly property real period: root.dialPeriods[key] > 0 ? root.dialPeriods[key] : windowMinutes * 60
+      readonly property int laps: Math.max(1, Math.round(windowMinutes * 60 / period))
       property bool mirrored: false
       property bool logScale: false
       property real logLo: 0
@@ -590,7 +608,7 @@ ShellRoot {
       property int stripHeight: 40
       property int polarMax: 150              // largest dial diameter
       readonly property real dial: Math.min(width, polarMax)
-      height: polar ? dial + 12 : stripHeight  // polar: square dial, caption under it
+      height: polar ? dial + (laps > 1 ? 23 : 12) : stripHeight  // polar: square dial, caption under it
 
       // Repaint only when a sample arrives (or the theme flips), never on a loop.
       onValuesChanged: if (live) graphCanvas.requestPaint()
@@ -725,14 +743,17 @@ ShellRoot {
           var R = tg.dial / 2, cx = width / 2, cy = R;
           var r1 = R - 7, r0 = R * 0.36;             // value rings: inner .. outer
           function at(r, a) { return [cx + r * Math.cos(a), cy + r * Math.sin(a)]; }
-          function angle(age) { return -Math.PI / 2 - age / tg.samples * 2 * Math.PI; }
+          // Age in samples -> angle: now at 12 o'clock, older anticlockwise,
+          // wrapping every period (so a short period lays down several laps).
+          var secsPerSample = tg.windowMinutes * 60 / tg.samples;
+          function angle(age) { return -Math.PI / 2 - (age * secsPerSample % tg.period) / tg.period * 2 * Math.PI; }
 
-          // Rim ticks, one per 5 minutes (or per minute on short graphs).
-          var tickMin = tg.windowMinutes >= 20 ? 5 : 1;
+          // Rim ticks: every 5 min on long laps, every minute, or every 30 s.
+          var tickSec = tg.period >= 1200 ? 300 : tg.period >= 240 ? 60 : 30;
           ctx.strokeStyle = root.alpha(root.c.dim, 0.5);
           ctx.lineWidth = 1;
-          for (var m = 0; m < tg.windowMinutes; m += tickMin) {
-            var a = -Math.PI / 2 - m / tg.windowMinutes * 2 * Math.PI;
+          for (var t = 0; t < tg.period - 0.5; t += tickSec) {
+            var a = -Math.PI / 2 - t / tg.period * 2 * Math.PI;
             var p = at(R - 4, a), q = at(R - 1, a);
             ctx.beginPath();
             ctx.moveTo(p[0], p[1]);
@@ -800,7 +821,10 @@ ShellRoot {
         y: tg.polar ? tg.dial : 0
         width: tg.polar ? implicitWidth : Math.min(implicitWidth, graphCanvas.width - 6)
         elide: Text.ElideRight
-        text: tg.caption
+        horizontalAlignment: Text.AlignHCenter
+        text: tg.caption + (tg.polar && tg.laps > 1
+                            ? "\n" + tg.laps + " laps of " + (tg.period >= 60 ? Math.round(tg.period / 60) + " min" : tg.period + " s")
+                            : "")
         color: root.c.muted
         font.pixelSize: 9
         font.family: "monospace"
