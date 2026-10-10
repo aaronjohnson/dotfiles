@@ -109,15 +109,47 @@ ShellRoot {
     property int batPercent: -1
     property string batStatus: ""        // Charging / Discharging / Full / Not charging
     property real batMinutesLeft: -1     // to empty when discharging, to full when charging
+    property real batWatts: 0            // power into (+) or out of (-) the battery
+    property real chargerWatts: 0        // what the USB-C charger agreed to supply; 0 = none
 
     FileView { id: batCapacity; blockLoading: true; path: root.batDir + "capacity" }
     FileView { id: batStatusFile; blockLoading: true; path: root.batDir + "status" }
     FileView { id: batChargeNow; blockLoading: true; path: root.batDir + "charge_now" }
     FileView { id: batChargeFull; blockLoading: true; path: root.batDir + "charge_full" }
     FileView { id: batCurrent; blockLoading: true; path: root.batDir + "current_now" }
+    FileView { id: batVoltage; blockLoading: true; path: root.batDir + "voltage_now" }
+
+    // USB-C chargers: the firmware reports one power supply per port (UCSI). The
+    // online one carries the negotiated contract: voltage, and the current
+    // allowed. Its path is only pointed at the charger while one is connected.
+    property var ucsiPorts: [1, 2, 3, 4].map(function (n) {
+        return "/sys/class/power_supply/ucsi-source-psy-USBC000:00" + n + "/";
+    })
+    FileView { id: ucsiOnline1; blockLoading: true; path: root.ucsiPorts[0] + "online" }
+    FileView { id: ucsiOnline2; blockLoading: true; path: root.ucsiPorts[1] + "online" }
+    FileView { id: ucsiOnline3; blockLoading: true; path: root.ucsiPorts[2] + "online" }
+    FileView { id: ucsiOnline4; blockLoading: true; path: root.ucsiPorts[3] + "online" }
+    property string chargerDir: ""
+    FileView { id: chargerVoltage; blockLoading: true; path: root.chargerDir ? root.chargerDir + "voltage_now" : "" }
+    FileView { id: chargerCurrent; blockLoading: true; path: root.chargerDir ? root.chargerDir + "current_max" : "" }
+
+    function readCharger() {
+        var online = [ucsiOnline1, ucsiOnline2, ucsiOnline3, ucsiOnline4];
+        var dir = "";
+        for (var i = 0; i < online.length; i++) {
+            online[i].reload();
+            if (online[i].text().trim() === "1") dir = root.ucsiPorts[i];
+        }
+        root.chargerDir = dir;
+        if (!dir) { root.chargerWatts = 0; return; }
+        chargerVoltage.reload();
+        chargerCurrent.reload();
+        // microvolts x microamps -> watts
+        root.chargerWatts = Number(chargerVoltage.text()) * Number(chargerCurrent.text()) / 1e12;
+    }
 
     function readBattery() {
-        var files = [batCapacity, batStatusFile, batChargeNow, batChargeFull, batCurrent];
+        var files = [batCapacity, batStatusFile, batChargeNow, batChargeFull, batCurrent, batVoltage];
         for (var i = 0; i < files.length; i++) files[i].reload();
         root.batPercent = parseInt(batCapacity.text());
         root.batStatus = batStatusFile.text().trim();
@@ -129,6 +161,9 @@ ShellRoot {
             root.batMinutesLeft = (full - now) / current * 60;
         else
             root.batMinutesLeft = -1;
+        var watts = current * Number(batVoltage.text()) / 1e12;   // µA x µV -> W
+        root.batWatts = root.batStatus === "Discharging" ? -watts : watts;
+        root.readCharger();
     }
 
     function formatMinutes(m) {
@@ -137,7 +172,7 @@ ShellRoot {
     }
 
     Timer {
-        interval: 30000
+        interval: 10000
         running: true
         repeat: true
         triggeredOnStart: true
@@ -1101,6 +1136,22 @@ ShellRoot {
                            : "")
                   color: batWidget.tint
                   font.pixelSize: 14
+                }
+
+                // Power flow: "-44W" draining, "+38W/65W" charging (into the battery /
+                // what the charger agreed to supply), "⚡65W" plugged in but not charging.
+                Text {
+                  anchors.verticalCenter: parent.verticalCenter
+                  visible: text !== ""
+                  text: {
+                    var w = Math.round(root.batWatts), c = Math.round(root.chargerWatts);
+                    if (w > 0) return "+" + w + "W" + (c > 0 ? "/" + c + "W" : "");
+                    if (w < 0) return "−" + (-w) + "W";
+                    return c > 0 ? "⚡" + c + "W" : "";
+                  }
+                  color: root.batWatts > 0 ? root.c.green : root.c.dim
+                  font.pixelSize: 12
+                  font.family: "monospace"
                 }
               }
 
