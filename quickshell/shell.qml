@@ -161,9 +161,23 @@ ShellRoot {
             root.batMinutesLeft = (full - now) / current * 60;
         else
             root.batMinutesLeft = -1;
-        var watts = current * Number(batVoltage.text()) / 1e12;   // µA x µV -> W
-        root.batWatts = root.batStatus === "Discharging" ? -watts : watts;
+        root.batWatts = powerFrom(current);
         root.readCharger();
+    }
+
+    // Power into (+) or out of (-) the battery, from the files already reloaded.
+    function powerFrom(current) {
+        var watts = current * Number(batVoltage.text()) / 1e12;   // µA x µV -> W
+        return root.batStatus === "Discharging" ? -watts : watts;
+    }
+
+    // Just the power, for the 2 s history: three small sysfs reads.
+    function readPower() {
+        batCurrent.reload();
+        batVoltage.reload();
+        batStatusFile.reload();
+        root.batStatus = batStatusFile.text().trim();
+        root.batWatts = powerFrom(Number(batCurrent.text()));
     }
 
     function formatMinutes(m) {
@@ -176,10 +190,7 @@ ShellRoot {
         running: true
         repeat: true
         triggeredOnStart: true
-        onTriggered: {
-            root.readBattery();
-            root.sampleSlow();
-        }
+        onTriggered: root.readBattery()
     }
 
     // ---- Brightness ----
@@ -314,11 +325,14 @@ ShellRoot {
     }
 
     // ---- Slow histories ----
-    // Cheap readings kept all the time on the battery's 10 s tick, 180 samples
-    // (30 minutes): CPU package temperature, average CPU clock, battery power
-    // (+ charging, - draining) and fan speed. Wifi signal joins them from its
-    // own 20 s reader (90 samples, also 30 minutes).
-    property int slowSamples: 180
+    // Cheap sysfs readings kept all the time on the 2 s tick that already
+    // wakes the bar for the network and NPU, so they add no wake-ups: CPU
+    // package temperature, average CPU clock, battery power (+ charging,
+    // - draining) and fan speed, 900 samples each (30 minutes). Wifi signal
+    // joins them from its own 20 s reader (90 samples, also 30 minutes),
+    // since each wifi read starts a process.
+    property int slowSamples: 900
+    property int wifiSamples: 90
     property var tempHistory: []         // deg C
     property var clockHistory: []        // GHz, mean over all cores
     property var powerHistory: []        // W, signed like batWatts
@@ -357,13 +371,17 @@ ShellRoot {
             root.tempHistory = pushHist(root.tempHistory, root.cpuTemp, n);
         }
         var f = readCpuFreqs();
+        root.cpuFreqs = f;                   // the dropdown's core rings use these too
         if (f.length > 0) {
             var sum = 0;
             for (var i = 0; i < f.length; i++) sum += f[i].mhz;
             root.cpuClockAvg = sum / f.length / 1000;
             root.clockHistory = pushHist(root.clockHistory, root.cpuClockAvg, n);
         }
-        if (root.batPercent >= 0) root.powerHistory = pushHist(root.powerHistory, root.batWatts, n);
+        if (root.batPercent >= 0) {
+            readPower();
+            root.powerHistory = pushHist(root.powerHistory, root.batWatts, n);
+        }
         if (root.fanPath !== "") {
             fanFile.reload();
             var rpm = parseInt(fanFile.text());
@@ -375,10 +393,11 @@ ShellRoot {
     }
 
     // ---- Stats dropdown ----
-    // Opened by clicking the network/memory/NPU area of the bar. Everything
-    // below is read only while it is open: CPU clocks and temperature, the GPU,
-    // and the NPU's memory. statsScreen is the screen it is open on ("" = closed).
-    property var graphModes: ({})        // per-graph view: key -> true = polar clock (session only)
+    // Opened by clicking the HUD/NPU group in the bar. Only the GPU and the
+    // NPU's memory are read just for it, and only while it is open.
+    // statsScreen is the screen it is open on ("" = closed).
+    property bool graphsPolar: true      // dropdown graphs: polar clocks (true) or strips
+    property var graphModes: ({})        // per-graph overrides: key -> true = polar clock (session only)
     property string statsScreen: ""
     readonly property bool statsOpen: statsScreen !== ""
     onStatsOpenChanged: if (statsOpen) {
@@ -470,14 +489,8 @@ ShellRoot {
     property real npuMemBytes: -1
     property int npuMaxMHz: 0
 
+    // CPU clocks and temperature come from sampleSlow on the same tick.
     function readDetails() {
-        root.cpuFreqs = readCpuFreqs();
-
-        if (root.cpuTempPath !== "") {
-            cpuTempFile.reload();
-            root.cpuTemp = Number(cpuTempFile.text()) / 1000;
-        }
-
         var gpus = [], lastIdle = [], at = Date.now(), g = gpuFiles.instances;
         for (var k = 0; k < g.length; k++) {
             g[k].idle.reload();
@@ -572,7 +585,7 @@ ShellRoot {
 
       // View: key names this graph in root.graphModes; no key = fixed strip.
       property string key: ""
-      property bool polarDefault: false
+      property bool polarDefault: root.graphsPolar
       readonly property bool polar: key !== "" && (root.graphModes[key] !== undefined ? root.graphModes[key] : polarDefault)
       property int stripHeight: 40
       property int polarMax: 150              // largest dial diameter
@@ -649,20 +662,26 @@ ShellRoot {
         property var themeColors: root.c
         onThemeColorsChanged: requestPaint()   // redraw when light/dark flips
 
-        // A dot, with a soft halo behind the newest ones.
+        // A dot. The newest three are round with a soft halo; the rest (up to
+        // 900 on a 30-minute dial) are plain 2 px squares faded with
+        // globalAlpha, which keeps a full repaint cheap.
         function dot(ctx, x, y, age, rgb) {
-          var fresh = age < 3;
-          var r = fresh ? 2.2 - age * 0.4 : 1.1;
-          if (fresh) {
-            var g = ctx.createRadialGradient(x, y, 0, x, y, r * 3);
-            g.addColorStop(0, root.alpha(rgb, 0.5));
-            g.addColorStop(1, root.alpha(rgb, 0));
-            ctx.fillStyle = g;
-            ctx.beginPath();
-            ctx.arc(x, y, r * 3, 0, 2 * Math.PI);
-            ctx.fill();
+          if (age >= 3) {
+            ctx.globalAlpha = 1 - 0.8 * Math.sqrt(age / tg.samples);
+            ctx.fillStyle = rgb;
+            ctx.fillRect(x - 1, y - 1, 2, 2);
+            ctx.globalAlpha = 1;
+            return;
           }
-          ctx.fillStyle = root.alpha(rgb, 1 - 0.8 * Math.sqrt(age / tg.samples));
+          var r = 2.2 - age * 0.4;
+          var g = ctx.createRadialGradient(x, y, 0, x, y, r * 3);
+          g.addColorStop(0, root.alpha(rgb, 0.5));
+          g.addColorStop(1, root.alpha(rgb, 0));
+          ctx.fillStyle = g;
+          ctx.beginPath();
+          ctx.arc(x, y, r * 3, 0, 2 * Math.PI);
+          ctx.fill();
+          ctx.fillStyle = rgb;
           ctx.beginPath();
           ctx.arc(x, y, r, 0, 2 * Math.PI);
           ctx.fill();
@@ -801,91 +820,6 @@ ShellRoot {
       guides: [1e3, 1e6]
       tint: root.c.blue
       negTint: root.c.orange
-    }
-
-    // A 0..1 history as a line over a soft fill, newest sample at the right
-    // edge with a glow, oldest fading out to the left. Linear time. Used for
-    // the bar's tiny memory sparkline, where a dot plot would be too busy.
-    component HistoryGraph: Canvas {
-      property var themeColors: root.c
-      onThemeColorsChanged: requestPaint()   // redraw when light/dark flips
-
-      property var values: []
-      property string tint: root.c.violet
-      property int samples: root.netSamples   // width covers this many samples
-      property bool guides: false             // faint 25/50/75% lines
-      onValuesChanged: requestPaint()         // only when a new sample arrives
-
-      onPaint: {
-        var ctx = getContext("2d");
-        ctx.clearRect(0, 0, width, height);
-        var top = 3, bottom = height - 1.5, span = bottom - top;
-        var step = (width - 4) / Math.max(1, samples - 1);
-        function xAt(age) { return width - 2 - age * step; }
-        function yAt(v) { return bottom - Math.max(0, Math.min(1, v)) * span; }
-
-        if (guides) {
-          ctx.fillStyle = root.alpha(root.c.dim, 0.35);
-          [0.25, 0.5, 0.75].forEach(function (f) {
-            for (var x = 2; x < width; x += 4) ctx.fillRect(x, yAt(f), 1, 1);
-          });
-        }
-        ctx.fillStyle = root.alpha(root.c.dim, 0.6);
-        ctx.fillRect(0, bottom, width, 1);
-
-        var n = values.length;
-        if (n === 0) return;
-        var grad = ctx.createLinearGradient(0, 0, width, 0);   // fade the oldest end
-        grad.addColorStop(0, root.alpha(tint, 0));
-        grad.addColorStop(1, root.alpha(tint, 0.28));
-        ctx.beginPath();
-        ctx.moveTo(xAt(n - 1), bottom);
-        for (var i = 0; i < n; i++) ctx.lineTo(xAt(n - 1 - i), yAt(values[i]));
-        ctx.lineTo(xAt(0), bottom);
-        ctx.closePath();
-        ctx.fillStyle = grad;
-        ctx.fill();
-
-        var line = ctx.createLinearGradient(0, 0, width, 0);
-        line.addColorStop(0, root.alpha(tint, 0.25));
-        line.addColorStop(1, root.alpha(tint, 1));
-        ctx.beginPath();
-        for (var j = 0; j < n; j++) {
-          var x = xAt(n - 1 - j), y = yAt(values[j]);
-          if (j === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-        }
-        ctx.strokeStyle = line;
-        ctx.lineWidth = 1.2;
-        ctx.stroke();
-
-        var ex = xAt(0), ey = yAt(values[n - 1]);              // newest: glowing dot
-        var g = ctx.createRadialGradient(ex, ey, 0, ex, ey, 5);
-        g.addColorStop(0, root.alpha(tint, 0.5));
-        g.addColorStop(1, root.alpha(tint, 0));
-        ctx.fillStyle = g;
-        ctx.beginPath();
-        ctx.arc(ex, ey, 5, 0, 2 * Math.PI);
-        ctx.fill();
-        ctx.fillStyle = tint;
-        ctx.beginPath();
-        ctx.arc(ex, ey, 1.8, 0, 2 * Math.PI);
-        ctx.fill();
-      }
-    }
-
-    // A thin horizontal meter, for the dropdown.
-    component Meter: Rectangle {
-      property real value: 0
-      property color tint: root.c.violet
-      height: 4
-      radius: 2
-      color: root.c.surface
-      Rectangle {
-        width: parent.width * Math.max(0, Math.min(1, parent.value))
-        height: parent.height
-        radius: parent.radius
-        color: parent.tint
-      }
     }
 
     // Dropdown section heading and body text.
@@ -1183,6 +1117,7 @@ ShellRoot {
             root.readNpu();
             root.readMem();
             root.readCpu();
+            root.sampleSlow();
             if (root.statsOpen) root.readDetails();
         }
     }
@@ -1217,7 +1152,7 @@ ShellRoot {
                 // History only from the 20 s timer's reads, not hover/open refreshes.
                 if (root.wifiTick) {
                     root.wifiTick = false;
-                    root.wifiHistory = root.pushHist(root.wifiHistory, signal >= 0 ? signal : null, root.slowSamples / 2);
+                    root.wifiHistory = root.pushHist(root.wifiHistory, signal >= 0 ? signal : null, root.wifiSamples);
                 }
             }
         }
@@ -1624,7 +1559,7 @@ ShellRoot {
                 }
               }
 
-              // ---- System stats: network, memory and NPU. Click for the dropdown ----
+              // ---- System stats: the CPU/memory/network HUD and the NPU chip. Click for the dropdown ----
               // A soft highlight on hover (and while open) shows it is clickable.
               Item {
                 id: statsArea
@@ -1649,47 +1584,60 @@ ShellRoot {
                 Row {
                   id: statsRow
                   anchors.centerIn: parent
-                  spacing: 18
+                  spacing: 8
 
-                  // ---- Network usage sparkline: blue = download, peach = upload ----
-                  Row {
+                  // ---- HUD: CPU, memory and network in one tiny dial ----
+                  // Outer arc = CPU load, inner arc = memory used, both filling
+                  // clockwise from 12 o'clock; the centre dot grows and
+                  // brightens with network throughput (download + upload) on
+                  // the network graph's log scale, 100 B/s to 100 MB/s.
+                  Canvas {
+                    id: hud
                     anchors.verticalCenter: parent.verticalCenter
-                    spacing: 6
+                    width: 30
+                    height: 30
+                    property var themeColors: root.c
+                    onThemeColorsChanged: requestPaint()   // redraw when light/dark flips
+                    property var tick: root.cpuHistory     // repaint on the 2 s sample only
+                    onTickChanged: requestPaint()
 
-                    NetGraph {
-                      anchors.verticalCenter: parent.verticalCenter
-                      width: 90
-                      height: 30
-                    }
+                    onPaint: {
+                      var ctx = getContext("2d");
+                      ctx.clearRect(0, 0, width, height);
+                      var cx = width / 2, cy = height / 2, top = -Math.PI / 2;
+                      function ring(r, share, rgb) {
+                        ctx.lineWidth = 3;
+                        ctx.lineCap = "butt";
+                        ctx.strokeStyle = root.alpha(root.c.dim, 0.25);
+                        ctx.beginPath();
+                        ctx.arc(cx, cy, r, 0, 2 * Math.PI);
+                        ctx.stroke();
+                        share = Math.max(0, Math.min(1, share));
+                        if (share <= 0.005) return;
+                        ctx.strokeStyle = rgb;
+                        ctx.beginPath();
+                        ctx.arc(cx, cy, r, top, top + Math.max(0.08, share * 2 * Math.PI), false);
+                        ctx.stroke();
+                      }
+                      ring(13, root.cpuLoad, root.c.yellow);
+                      ring(8.5, root.memTotalKb > 0 ? root.memUsedKb / root.memTotalKb : 0, root.c.violet);
 
-                    Text {
-                      anchors.verticalCenter: parent.verticalCenter
-                      text: "↓" + root.formatRate(root.rxRate) + " ↑" + root.formatRate(root.txRate)
-                      color: root.c.blue
-                      font.pixelSize: 12
-                      font.family: "monospace"
-                    }
-                  }
-
-                  // ---- Memory: used (total - available) over the last 5 minutes ----
-                  Row {
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: 6
-
-                    HistoryGraph {
-                      anchors.verticalCenter: parent.verticalCenter
-                      width: 44
-                      height: 22
-                      values: root.memHistory
-                      tint: root.c.violet
-                    }
-
-                    Text {
-                      anchors.verticalCenter: parent.verticalCenter
-                      text: root.formatKb(root.memUsedKb)
-                      color: root.c.violet
-                      font.pixelSize: 12
-                      font.family: "monospace"
+                      var rate = root.rxRate + root.txRate;
+                      var f = rate > 0 ? Math.max(0, Math.min(1, (Math.log(rate) / Math.LN10 - 2) / 6)) : 0;
+                      var r = 1.2 + 3 * f;
+                      if (f > 0.3) {                         // a soft halo once it's busy
+                        var g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r * 2.2);
+                        g.addColorStop(0, root.alpha(root.c.blue, 0.5 * f));
+                        g.addColorStop(1, root.alpha(root.c.blue, 0));
+                        ctx.fillStyle = g;
+                        ctx.beginPath();
+                        ctx.arc(cx, cy, r * 2.2, 0, 2 * Math.PI);
+                        ctx.fill();
+                      }
+                      ctx.fillStyle = root.alpha(root.c.blue, 0.35 + 0.65 * f);
+                      ctx.beginPath();
+                      ctx.arc(cx, cy, r, 0, 2 * Math.PI);
+                      ctx.fill();
                     }
                   }
 
@@ -1753,9 +1701,12 @@ ShellRoot {
                 anchor.margins.top: 6
                 visible: statsArea.open
                 // Two columns: wifi, network, memory and NPU on the left; CPU,
-                // thermals, battery and GPU on the right. The 30-minute series
-                // start as polar clocks, the rest as strips; click to flip.
+                // thermals, battery and GPU on the right. Every graph starts as
+                // a polar clock with its details beside it; the switch at the
+                // bottom flips them all to strips (details then sit underneath),
+                // and clicking one graph flips just that one.
                 property int colWidth: 400
+                property int dialWidth: 130
                 implicitWidth: colWidth * 2 + 24 + 28
                 implicitHeight: Math.max(statsColL.implicitHeight, statsColR.implicitHeight) + 24
                 color: "transparent"
@@ -1800,22 +1751,16 @@ ShellRoot {
 
                       // -- Wifi --
                       StatTitle { text: "WIFI"; color: root.c.cyan }
-                      StatText {
-                        text: root.wifiSignal < 0 ? "offline"
-                              : root.wifiSsid + "   " + root.wifiDbm + " dBm   tx "
-                                + Math.round(root.wifiBitrate) + " Mbit/s"
-                        color: root.c.fg
-                      }
-                      Row {
+                      Flow {
+                        width: parent.width
                         spacing: 14
                         TimeGraph {
                           key: "wifi"
-                          polarDefault: true
-                          width: 130
+                          width: polar ? statsPopup.dialWidth : parent.width
                           stripHeight: 46
                           live: statsArea.open
                           values: root.wifiHistory
-                          samples: root.slowSamples / 2
+                          samples: root.wifiSamples
                           windowMinutes: 30
                           lo: 0
                           hi: 100
@@ -1825,10 +1770,10 @@ ShellRoot {
                           valueText: root.wifiSignal >= 0 ? root.wifiSignal + "%" : "off"
                         }
                         StatText {
-                          anchors.verticalCenter: parent.verticalCenter
-                          visible: root.wifiSignal >= 0 && root.wifiLinks.length > 0
+                          color: root.c.fg
                           text: {
-                            var out = [];
+                            if (root.wifiSignal < 0) return "offline";
+                            var out = [root.wifiSsid, root.wifiDbm + " dBm · tx " + Math.round(root.wifiBitrate) + " Mbit/s", ""];
                             for (var i = 0; i < root.wifiLinks.length; i++) {
                               var l = root.wifiLinks[i];
                               out.push((l.active ? "● " : "○ ") + "link " + l.id + "  "
@@ -1844,81 +1789,119 @@ ShellRoot {
 
                       // -- Network --
                       StatTitle { text: "NETWORK"; color: root.c.blue }
-                      StatText {
-                        text: "↓ " + (root.formatRate(root.rxRate) + "/s").padEnd(8)
-                              + "↑ " + (root.formatRate(root.txRate) + "/s").padEnd(8)
-                              + "boot ↓ " + root.formatBytes(Math.max(0, root.lastRx))
-                              + " ↑ " + root.formatBytes(Math.max(0, root.lastTx))
-                        color: root.c.fg
-                      }
-                      NetGraph {
-                        key: "net"
+                      Flow {
                         width: parent.width
-                        stripHeight: 56
-                        windowMinutes: 5
-                        live: statsArea.open
-                      }
-                      StatText {
-                        text: "log rate: dotted at 1 KB/s and 1 MB/s · 5 min"
-                        font.pixelSize: 10
-                        color: root.c.muted
+                        spacing: 14
+                        NetGraph {
+                          key: "net"
+                          width: polar ? statsPopup.dialWidth : parent.width
+                          stripHeight: 56
+                          windowMinutes: 5
+                          live: statsArea.open
+                          caption: "5 min"
+                        }
+                        StatText {
+                          color: root.c.fg
+                          text: "↓ " + root.formatRate(root.rxRate) + "/s   ↑ " + root.formatRate(root.txRate) + "/s"
+                                + "\n\nsince boot\n↓ " + root.formatBytes(Math.max(0, root.lastRx))
+                                + "   ↑ " + root.formatBytes(Math.max(0, root.lastTx))
+                        }
+                        StatText {
+                          text: "↓ blue, outward / up; ↑ orange, inward / down\nlog rate: dotted at 1 KB/s and 1 MB/s"
+                          font.pixelSize: 10
+                          color: root.c.muted
+                        }
                       }
 
                       Item { width: 1; height: 4 }
 
                       // -- Memory --
                       StatTitle { text: "MEMORY"; color: root.c.violet }
-                      StatText {
-                        property var m: root.memInfo
-                        text: m.MemTotal > 0
-                              ? "used " + root.formatKb(root.memUsedKb) + " of " + root.formatKb(m.MemTotal)
-                                + "   available " + root.formatKb(m.MemAvailable)
-                                + "\ncached " + root.formatKb(m.Cached) + "   buffers " + root.formatKb(m.Buffers)
-                                + "   swap " + root.formatKb(m.SwapTotal - m.SwapFree) + " of " + root.formatKb(m.SwapTotal)
-                              : "…"
-                        color: root.c.fg
-                      }
-                      TimeGraph {
-                        key: "mem"
+                      Flow {
                         width: parent.width
-                        stripHeight: 38
-                        live: statsArea.open
-                        values: root.memHistory
-                        guides: [0.25, 0.5, 0.75]
-                        tint: root.c.violet
-                        caption: "used · 5 min"
-                        valueText: root.memTotalKb > 0 ? Math.round(root.memUsedKb / root.memTotalKb * 100) + "%" : ""
+                        spacing: 14
+                        TimeGraph {
+                          key: "mem"
+                          width: polar ? statsPopup.dialWidth : parent.width
+                          stripHeight: 38
+                          live: statsArea.open
+                          values: root.memHistory
+                          guides: [0.5, 0.75]
+                          tint: root.c.violet
+                          caption: "used · 5 min"
+                          valueText: root.memTotalKb > 0 ? Math.round(root.memUsedKb / root.memTotalKb * 100) + "%" : ""
+                        }
+                        StatText {
+                          property var m: root.memInfo
+                          color: root.c.fg
+                          text: m.MemTotal > 0
+                                ? "used " + root.formatKb(root.memUsedKb) + " of " + root.formatKb(m.MemTotal)
+                                  + "\navailable " + root.formatKb(m.MemAvailable)
+                                  + "\ncached " + root.formatKb(m.Cached) + "   buffers " + root.formatKb(m.Buffers)
+                                  + "\nswap " + root.formatKb(m.SwapTotal - m.SwapFree) + " of " + root.formatKb(m.SwapTotal)
+                                : "…"
+                        }
                       }
 
                       Item { width: 1; height: 4 }
 
                       // -- NPU --
                       StatTitle { text: "NPU"; color: root.c.green; visible: root.npuPresent }
-                      StatText {
-                        visible: root.npuPresent
-                        text: (root.npuAwake ? "awake" : "asleep") + "   " + root.npuMHz + " of " + root.npuMaxMHz + " MHz"
-                              + "\nbusy since boot " + root.formatDuration(Math.max(0, root.npuLastBusy) / 1e6)
-                              + "   memory " + (root.npuMemBytes >= 0 ? root.formatBytes(root.npuMemBytes) : "…")
-                        color: root.c.fg
-                      }
-                      TimeGraph {
-                        key: "npu"
+                      Flow {
                         visible: root.npuPresent
                         width: parent.width
-                        stripHeight: 34
-                        live: statsArea.open
-                        values: root.npuHistory
-                        logScale: true
-                        logLo: -3                       // 0.1% .. 100%
-                        logHi: 0
-                        guides: [0.01, 0.1]
-                        tint: root.c.green
-                        caption: "load · log, dotted 1% 10% · 5 min"
-                        valueText: Math.round(root.npuLoad * 100) + "%"
+                        spacing: 14
+                        TimeGraph {
+                          key: "npu"
+                          width: polar ? statsPopup.dialWidth : parent.width
+                          stripHeight: 34
+                          live: statsArea.open
+                          values: root.npuHistory
+                          logScale: true
+                          logLo: -3                       // 0.1% .. 100%
+                          logHi: 0
+                          guides: [0.01, 0.1]
+                          tint: root.c.green
+                          caption: "load · 5 min"
+                          valueText: Math.round(root.npuLoad * 100) + "%"
+                        }
+                        StatText {
+                          color: root.c.fg
+                          text: (root.npuAwake ? "awake" : "asleep") + "\n" + root.npuMHz + " of " + root.npuMaxMHz + " MHz"
+                                + "\nbusy since boot " + root.formatDuration(Math.max(0, root.npuLastBusy) / 1e6)
+                                + "\nmemory " + (root.npuMemBytes >= 0 ? root.formatBytes(root.npuMemBytes) : "…")
+                                + "\n\nlog load: dotted 1% and 10%"
+                        }
                       }
 
+                      Item { width: 1; height: 4 }
+
+                      // The one switch for every graph: all dials, or all strips.
+                      Rectangle {
+                        width: toggleText.implicitWidth + 16
+                        height: 20
+                        radius: 4
+                        color: toggleHover.hovered ? root.c.surface : "transparent"
+                        border.color: root.c.surface
+                        Text {
+                          id: toggleText
+                          anchors.centerIn: parent
+                          text: (root.graphsPolar ? "◴ dials" : "▭ strips") + "  ·  switch all to "
+                                + (root.graphsPolar ? "strips" : "dials")
+                          color: root.c.dim
+                          font.pixelSize: 11
+                          font.family: "monospace"
+                        }
+                        HoverHandler { id: toggleHover; cursorShape: Qt.PointingHandCursor }
+                        TapHandler {
+                          onTapped: {
+                            root.graphsPolar = !root.graphsPolar;
+                            root.graphModes = ({});     // per-graph flips reset to the new default
+                          }
+                        }
+                      }
                       StatText {
-                        text: "click a graph: strip ⇄ clock"
+                        text: "click any graph to flip just that one"
                         font.pixelSize: 10
                         color: root.c.muted
                       }
@@ -2056,11 +2039,11 @@ ShellRoot {
                           spacing: 5
                           TimeGraph {
                             key: "cpu"
-                            width: parent.width
+                            width: polar ? statsPopup.dialWidth : parent.width
                             stripHeight: 100
                             live: statsArea.open
                             values: root.cpuHistory
-                            guides: [0.25, 0.5, 0.75]
+                            guides: [0.5, 0.75]
                             tint: root.c.yellow
                             caption: "load · 5 min"
                             valueText: Math.round(root.cpuLoad * 100) + "%"
@@ -2081,7 +2064,6 @@ ShellRoot {
                         spacing: 12
                         TimeGraph {
                           key: "temp"
-                          polarDefault: true
                           width: statsColR.third
                           stripHeight: 46
                           live: statsArea.open
@@ -2099,7 +2081,6 @@ ShellRoot {
                         }
                         TimeGraph {
                           key: "clock"
-                          polarDefault: true
                           width: statsColR.third
                           stripHeight: 46
                           live: statsArea.open
@@ -2116,7 +2097,6 @@ ShellRoot {
                         }
                         TimeGraph {
                           key: "fan"
-                          polarDefault: true
                           visible: root.fanPath !== ""
                           width: statsColR.third
                           stripHeight: 46
@@ -2130,7 +2110,7 @@ ShellRoot {
                           rangeStep: 1000
                           guides: [2000, 4000]
                           tint: root.c.cyan
-                          valueWidth: 58
+                          valueWidth: 40
                           caption: "fan rpm · 30 min"
                           valueText: root.fanRpm >= 0 ? String(root.fanRpm) : ""
                         }
@@ -2138,16 +2118,16 @@ ShellRoot {
 
                       Item { width: 1; height: 4 }
 
-                      // -- Battery: power in (charging, outward / up, green) or
-                      // out (draining, inward / down, orange) --
+                      // -- Battery: power in (charging: outward / up, green) or
+                      // out (draining: inward / down, orange) --
                       StatTitle { text: "BATTERY"; color: root.c.green; visible: root.batPercent >= 0 }
-                      Row {
+                      Flow {
+                        width: parent.width
                         spacing: 14
                         visible: root.batPercent >= 0
                         TimeGraph {
                           key: "power"
-                          polarDefault: true
-                          width: statsColR.third
+                          width: polar ? statsPopup.dialWidth : parent.width
                           stripHeight: 46
                           live: statsArea.open
                           values: root.powerHistory
@@ -2164,17 +2144,20 @@ ShellRoot {
                           valueText: statsPopup.signedWatts(root.batWatts)
                         }
                         StatText {
-                          anchors.verticalCenter: parent.verticalCenter
+                          color: root.c.fg
                           text: root.batPercent + "%  " + root.batStatus.toLowerCase()
                                 + (root.batMinutesLeft > 0
-                                   ? (root.batStatus === "Charging" ? ", full in " : ", ") + root.formatMinutes(root.batMinutesLeft)
+                                   ? (root.batStatus === "Charging" ? "\nfull in " : "\n") + root.formatMinutes(root.batMinutesLeft)
                                      + (root.batStatus === "Charging" ? "" : " left")
                                    : "")
                                 + "\n" + (root.batWatts > 0 ? "charging " : root.batWatts < 0 ? "draining " : "")
                                 + statsPopup.signedWatts(root.batWatts)
                                 + (root.chargerWatts > 0 ? "\ncharger " + Math.round(root.chargerWatts) + " W" : "")
-                                + "\n\nring: zero · out = charging\nin = draining · 10 W dotted"
-                          color: root.c.fg
+                        }
+                        StatText {
+                          text: "charging: green, outward / up\ndraining: orange, inward / down · 10 W dotted"
+                          font.pixelSize: 10
+                          color: root.c.muted
                         }
                       }
 
@@ -2189,49 +2172,44 @@ ShellRoot {
                         visible: root.gpuStats.length === 0
                         text: "no GPU idle/frequency counters found"
                       }
-                      Repeater {
-                        model: root.gpuStats
-                        Column {
-                          required property var modelData
-                          required property int index
-                          width: statsColR.width
-                          spacing: 3
-                          StatText {
-                            property string role: modelData.name.endsWith("-rc") ? "render" : modelData.name.endsWith("-mc") ? "media" : ""
-                            text: (modelData.name + " " + role).padEnd(14)
-                                  + (modelData.mhz > 0 ? "" : "idle (C6)   ") + "max " + modelData.maxMhz + " MHz"
-                            color: root.c.fg
-                          }
-                          Row {
-                            spacing: 12
-                            TimeGraph {
-                              key: "gpu-busy-" + index
-                              width: (statsColR.width - 12) / 2
-                              stripHeight: 30
-                              live: statsArea.open
-                              values: root.gpuBusyHist[index] || []
-                              logScale: true
-                              logLo: -3
-                              logHi: 0
-                              guides: [0.01, 0.1]
-                              tint: root.c.orange
-                              caption: "busy · log"
-                              valueText: modelData.busy < 0 ? "…" : Math.round(modelData.busy * 100) + "%"
-                            }
-                            TimeGraph {
-                              key: "gpu-clock-" + index
-                              width: (statsColR.width - 12) / 2
-                              stripHeight: 30
-                              live: statsArea.open
-                              values: root.gpuMhzHist[index] || []
-                              lo: 0
-                              hi: Math.max(1, modelData.maxMhz)
-                              guides: [modelData.maxMhz / 2]
-                              tint: root.c.orange
-                              valueWidth: 58
-                              caption: "clock"
-                              valueText: modelData.mhz > 0 ? modelData.mhz + " MHz" : "C6"
-                            }
+                      StatText {
+                        visible: root.gpuStats.length > 0
+                        color: root.c.fg
+                        text: root.gpuStats.map(function (g) {
+                          var role = g.name.endsWith("-rc") ? "render" : g.name.endsWith("-mc") ? "media" : "";
+                          return (g.name + " " + role).padEnd(14) + (g.mhz > 0 ? (g.mhz + " MHz").padEnd(12) : "idle (C6)   ")
+                                 + "max " + g.maxMhz + " MHz";
+                        }).join("\n")
+                      }
+                      // Busy and clock for each GT: four small dials in a row, or
+                      // two strips per row.
+                      Flow {
+                        width: parent.width
+                        spacing: 12
+                        Repeater {
+                          model: root.gpuStats.length * 2
+                          TimeGraph {
+                            required property int index
+                            property int gt: Math.floor(index / 2)
+                            property bool isClock: index % 2 === 1
+                            property var stat: root.gpuStats[gt] || ({ name: "", busy: -1, mhz: 0, maxMhz: 1 })
+                            property string role: stat.name.endsWith("-rc") ? "render" : stat.name.endsWith("-mc") ? "media" : stat.name
+                            key: (isClock ? "gpu-clock-" : "gpu-busy-") + gt
+                            width: polar ? (statsColR.width - 36) / 4 : (statsColR.width - 12) / 2
+                            stripHeight: 30
+                            live: statsArea.open
+                            values: (isClock ? root.gpuMhzHist[gt] : root.gpuBusyHist[gt]) || []
+                            logScale: !isClock
+                            logLo: -3
+                            logHi: 0
+                            lo: 0
+                            hi: isClock ? Math.max(1, stat.maxMhz) : 1
+                            guides: isClock ? [stat.maxMhz / 2] : [0.01, 0.1]
+                            tint: root.c.orange
+                            valueWidth: isClock ? 44 : 50
+                            caption: role + (isClock ? " MHz" : " busy")
+                            valueText: isClock ? (stat.mhz > 0 ? String(stat.mhz) : "C6")
+                                       : (stat.busy < 0 ? "…" : Math.round(stat.busy * 100) + "%")
                           }
                         }
                       }
