@@ -52,3 +52,8 @@ hud --once          # print one frame and exit
 It draws with braille dots in kitty and with half blocks on the Linux console
 (whose fonts have no braille); `--braille`, `--blocks` and `--ascii` override, and
 `--mono` drops colour. Dials grow with the window; at 80x24 it shows ten.
+
+On a text console without Wayland, `hud --fb` draws the dials as anti-aliased
+graphics straight onto `/dev/fb0` in the bar's Solarized colours (light or dark
+following the desktop switch; `--light`/`--dark` override). That needs membership
+of the `video` group; `hud --fb --png frame.png` renders a frame to a file instead.

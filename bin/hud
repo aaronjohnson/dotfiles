@@ -1,5 +1,5 @@
 #!/usr/bin/env nix-shell
-#!nix-shell -i python3 -p python3
+#!nix-shell -i python3 -p "python3.withPackages (ps: [ ps.pillow ])" dejavu_fonts
 """hud: the Quickshell bar's stats dropdown as a terminal UI, with polar dials.
 
 Each dial is a polar clock: angle is time (now at 12 o'clock, older samples
@@ -964,6 +964,8 @@ def render(s, W, H, mode):
         buf.put(x, 0, t, role, attr)
         x += len(t)
     hint = "q quit  m %s" % mode
+    if os.environ.get("TERM") == "linux" and os.path.exists(FB_DEV):
+        hint = "try --fb  " + hint
     if x + len(hint) + 2 <= W:
         buf.put(W - len(hint), 0, hint, "muted")
     # CI rows at the bottom while the runner is installed.
@@ -1043,6 +1045,487 @@ def draw_ci(buf, y, W, s, G):
         buf.put(len(head) + bw, y + 1, tail, "fg")
     elif ci["job"] is not None:
         buf.put(0, y + 1, "no build progress reported", "muted", DIM)
+
+
+# ---------------------------------------------------------------- framebuffer
+#
+# `hud --fb` draws the same panels as pixels on /dev/fb0, for a text console
+# with no Wayland/X: the bar's look (Solarized, polar dials with fading dots
+# and a glow on the newest, CPU core rings), anti-aliased by drawing each dial
+# at twice its size and shrinking it. Same Sampler, same panels().
+
+SOLARIZED = {
+    "dark": dict(bg="#002b36", surface="#073642", muted="#586e75", dim="#657b83", fg="#93a1a1",
+                 yellow="#b58900", orange="#cb4b16", red="#dc322f", violet="#6c71c4",
+                 blue="#268bd2", cyan="#2aa198", green="#859900"),
+    "light": dict(bg="#fdf6e3", surface="#eee8d5", muted="#93a1a1", dim="#839496", fg="#586e75",
+                  yellow="#b58900", orange="#cb4b16", red="#dc322f", violet="#6c71c4",
+                  blue="#268bd2", cyan="#2aa198", green="#859900"),
+}
+
+FB_DEV = "/dev/fb0"
+FB_SYS = "/sys/class/graphics/fb0/"
+FBIOGET_VSCREENINFO = 0x4600
+KDSETMODE, KD_TEXT, KD_GRAPHICS = 0x4B3A, 0, 1
+
+
+def system_theme():
+    """The desktop's light/dark switch (the bar flips it at sunrise/sunset); dark if unknown."""
+    try:
+        out = subprocess.run(["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"],
+                             capture_output=True, text=True, timeout=3).stdout
+    except (OSError, subprocess.SubprocessError):
+        return "dark"
+    return "light" if "light" in out else "dark"
+
+
+def find_font(bold):
+    name = "DejaVuSansMono-Bold.ttf" if bold else "DejaVuSansMono.ttf"
+    # nix-shell lists dejavu_fonts (from the shebang) in $buildInputs.
+    for p in os.environ.get("buildInputs", "").split():
+        f = p + "/share/fonts/truetype/" + name
+        if os.path.exists(f):
+            return f
+    try:
+        f = subprocess.run(["fc-match", "-f", "%{file}", "monospace" + (":bold" if bold else "")],
+                           capture_output=True, text=True, timeout=3).stdout.strip()
+        if f and os.path.exists(f):
+            return f
+    except (OSError, subprocess.SubprocessError):
+        pass
+    found = glob.glob("/nix/store/*-dejavu-fonts-*/share/fonts/truetype/" + name)
+    return found[0] if found else None
+
+
+def rgb(h):
+    return tuple(int(h[i:i + 2], 16) for i in (1, 3, 5))
+
+
+def mix(a, b, t):
+    """Colour a at opacity t over colour b (the bar's alpha(), pre-blended on a solid background)."""
+    return tuple(int(a[i] * t + b[i] * (1 - t) + 0.5) for i in range(3))
+
+
+class FbRenderer:
+    SS = 2                                   # supersampling for the dials
+
+    def __init__(self, W, H, theme):
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+        except ImportError:
+            sys.exit("hud --fb needs Pillow; run hud through its nix-shell shebang")
+        self.Image, self.ImageDraw, self.ImageFont = Image, ImageDraw, ImageFont
+        self.W, self.H = W, H
+        self.u = min(W / 1440, H / 960)      # one "bar pixel" (the bar runs at scale 2 here)
+        self.paths = {False: find_font(False), True: find_font(True)}
+        self.fonts = {}
+        self.set_theme(theme)
+
+    def set_theme(self, theme):
+        self.theme = theme
+        self.c = {k: rgb(v) for k, v in SOLARIZED[theme].items()}
+
+    def font(self, size, bold=False):
+        size = max(6, int(round(size)))
+        key = (size, bold)
+        if key not in self.fonts:
+            p = self.paths[bold] or self.paths[False]
+            self.fonts[key] = (self.ImageFont.truetype(p, size) if p
+                               else self.ImageFont.load_default(size=size))
+        return self.fonts[key]
+
+    def role(self, r):
+        return self.c["fg"] if r == "fg" else self.c[r]
+
+    # -- layout --
+    def render(self, s):
+        G = GLYPHS["braille"]
+        u, W, H, c = self.u, self.W, self.H, self.c
+        img = self.Image.new("RGB", (W, H), c["bg"])
+        dr = self.ImageDraw.Draw(img)
+        margin = int(16 * u)
+        head_h = int(30 * u)
+        foot_h = int(44 * u) if s.ci["installed"] else 0
+        self.header(dr, s, G, margin, head_h)
+        if foot_h:
+            self.footer(dr, s, G, margin, H - foot_h - margin // 2, W - 2 * margin, foot_h)
+        ps = panels(s, G)
+        ax, ay = margin, head_h + margin // 2
+        aw, ah = W - 2 * margin, H - ay - foot_h - margin
+        text_h = int(46 * u)                 # caption + two info lines under each dial
+        gap = int(18 * u)
+        best = None
+        for cols in range(1, len(ps) + 1):
+            rows = -(-len(ps) // cols)
+            D = min(aw / cols - gap, ah / rows - text_h - gap)
+            if best is None or D > best[0]:
+                best = (D, cols, rows)
+        D, cols, rows = best
+        D = int(D)
+        tw, th = aw / cols, ah / rows
+        for i, p in enumerate(ps):
+            col, row = i % cols, i // cols
+            n_in_row = min(cols, len(ps) - row * cols)
+            x0 = ax + (aw - n_in_row * tw) / 2 + col * tw     # centre a short last row
+            y0 = ay + row * th + (th - D - text_h) / 2
+            cx = int(x0 + tw / 2)
+            if p[0] == "cpu":
+                tile = self.cpu_rings(s, D)
+                img.paste(tile, (cx - D // 2, int(y0)))
+                self.cpu_centre(dr, s, G, cx, int(y0) + D // 2, D)
+                cap = [(p[1], p[2], True), ("  " + pct(s.cpu_load), "fg", False)]
+                info = p[4]
+            else:
+                d = p[1]
+                tile = self.dial(d, D)
+                img.paste(tile, (cx - D // 2, int(y0)))
+                self.centre(dr, d.centre, cx, int(y0) + D // 2, D)
+                laps = ("%d laps of %s" % (d.laps, self.mins(d.period)) if d.laps > 1
+                        else self.mins(d.window))
+                cap = [(d.title, d.tint, True), ("  " + laps, "muted", False)]
+                info = d.info
+            ty = int(y0) + D + int(4 * u)
+            self.line(dr, cx, ty, cap, 11 * u)
+            for j, (t, r) in enumerate([l for l in info if l[0]][:2]):
+                dr.text((cx, ty + int((15 + 13 * j) * u)), t, fill=self.role(r),
+                        font=self.font(10 * u), anchor="mt")
+        return img
+
+    @staticmethod
+    def mins(secs):
+        return "%d min" % round(secs / 60) if secs >= 60 else "%d s" % secs
+
+    def line(self, dr, cx, y, parts, size):
+        """Centred run of (text, role, bold) pieces."""
+        fs = [self.font(size, b) for _, _, b in parts]
+        widths = [dr.textlength(t, font=f) for (t, _, _), f in zip(parts, fs)]
+        x = cx - sum(widths) / 2
+        for (t, r, b), f, w in zip(parts, fs, widths):
+            dr.text((x, y), t, fill=self.role(r), font=f)
+            x += w
+
+    def header(self, dr, s, G, margin, head_h):
+        u, b = self.u, s.bat
+        parts = [("hud", "cyan", True), ("  " + socket.gethostname(), "muted", False),
+                 ("  " + time.strftime("%H:%M:%S"), "fg", False)]
+        if b["pct"] is not None:
+            parts.append(("   battery %d%%  %s" % (b["pct"], signed_watts(b["watts"], G)), "green", False))
+        if s.wifi["ssid"]:
+            parts.append(("   " + s.wifi["ssid"], "cyan", False))
+        x, y = margin, int(8 * u)
+        for t, r, bold in parts:
+            f = self.font(13 * u, bold)
+            dr.text((x, y), t, fill=self.role(r), font=f)
+            x += dr.textlength(t, font=f)
+        dr.text((self.W - margin, y), "q quit", fill=self.c["muted"], font=self.font(11 * u), anchor="ra")
+        dr.line((margin, head_h, self.W - margin, head_h), fill=self.c["surface"], width=max(1, int(u)))
+
+    def footer(self, dr, s, G, x, y, w, h):
+        u, ci = self.u, s.ci
+        dr.line((x, y, x + w, y), fill=self.c["surface"], width=max(1, int(u)))
+        y += int(6 * u)
+        if ci["job"] is not None:
+            parts = [("CI ", "cyan", True), (G["on"] + " job " + fmt_age(ci["job"]), "cyan", False)]
+            if ci["step"]:
+                parts.append(("   " + ci["step"], "fg", False))
+            elif not ci["readable"]:
+                parts.append(("   (ci-status not readable)", "muted", False))
+        elif ci["active"]:
+            parts = [("CI ", "cyan", True), (G["off"] + " idle, waiting for a job", "muted", False)]
+        elif ci["failed"]:
+            parts = [("CI ", "red", True), ("failed", "red", False)]
+        else:
+            parts = [("CI ", "muted", True), ("stopped", "muted", False)]
+        xx = x
+        for t, r, bold in parts:
+            f = self.font(12 * u, bold)
+            dr.text((xx, y), t, fill=self.role(r), font=f)
+            xx += dr.textlength(t, font=f)
+        if ci["total"] > 0:
+            pkg = ci["pkg"]
+            label = "LLVM" if "llvm" in pkg else "compiler" if "compiler" in pkg else pkg
+            tail = "%d / %d  %d%%" % (ci["done"], ci["total"], ci["done"] / ci["total"] * 100)
+            if ci["eta"] is not None:
+                tail += "   ETA " + fmt_age(ci["eta"])
+            by = y + int(18 * u)
+            f = self.font(11 * u)
+            lw = dr.textlength(label + "  ", font=self.font(11 * u, True))
+            tw_ = dr.textlength("  " + tail, font=f)
+            dr.text((x, by), label, fill=self.c["cyan"], font=self.font(11 * u, True))
+            bx0, bx1 = x + lw, x + w - tw_
+            bh = int(8 * u)
+            top = by + int(3 * u)
+            dr.rounded_rectangle((bx0, top, bx1, top + bh), radius=bh // 2, fill=self.c["surface"])
+            fx = bx0 + (bx1 - bx0) * ci["done"] / ci["total"]
+            if fx > bx0 + bh:
+                dr.rounded_rectangle((bx0, top, fx, top + bh), radius=bh // 2, fill=self.c["cyan"])
+            dr.text((x + w, by), tail, fill=self.c["fg"], font=f, anchor="ra")
+
+    def centre(self, dr, lines, cx, cy, D):
+        lines = [l for l in lines if l and l[0]]
+        big = max(11 * self.u, D * 0.085)
+        sizes = [big if k == 0 else big * 0.75 for k in range(len(lines))]
+        total = sum(sizes) * 1.15
+        y = cy - total / 2
+        for (t, r, *a), sz in zip(lines, sizes):
+            bold = (a[0] if a else BOLD) & BOLD
+            dr.text((cx, y), t, fill=self.role(r), font=self.font(sz, bool(bold)), anchor="mt")
+            y += sz * 1.15
+
+    # -- a polar clock, like the bar's TimeGraph in polar mode --
+    def dial(self, d, D):
+        ss, c = self.SS, self.c
+        S = D * ss
+        im = self.Image.new("RGB", (S, S), c["bg"])
+        dr = self.ImageDraw.Draw(im)
+        u = self.u * ss
+        R = S / 2
+        cx = cy = R
+        r1, r0 = R - 7 * u, R * 0.36
+
+        def at(r, a):
+            return cx + r * math.cos(a), cy + r * math.sin(a)
+
+        tick = 300 if d.period >= 1200 else 60 if d.period >= 240 else 30
+        t = 0
+        while t < d.period - 0.5:
+            a = -math.pi / 2 - t / d.period * 2 * math.pi
+            dr.line((at(R - 4 * u, a), at(R - 1 * u, a)), fill=mix(c["dim"], c["bg"], 0.5), width=max(1, int(u)))
+            t += tick
+        dr.ellipse((cx - r0, cy - r0, cx + r0, cy + r0), outline=mix(c["dim"], c["bg"], 0.25), width=max(1, int(u)))
+        if d.mirrored:
+            rm = (r0 + r1) / 2
+            dr.ellipse((cx - rm, cy - rm, cx + rm, cy + rm), outline=mix(c["dim"], c["bg"], 0.6),
+                       width=max(1, int(u)))
+        gcol = mix(c["dim"], c["bg"], 0.45)
+        for gv in d.guides:
+            for v in ((gv, -gv) if d.mirrored else (gv,)):
+                r = d.r_of(v, r0, r1)
+                n = max(12, int(2 * math.pi * r / (4 * u)))
+                for k in range(n):
+                    x, y = at(r, k / n * 2 * math.pi)
+                    dr.rectangle((x - u / 2, y - u / 2, x + u / 2, y + u / 2), fill=gcol)
+        dr.line((cx, cy - r0, cx, cy - R + u), fill=mix(c["dim"], c["bg"], 0.5), width=max(1, int(u)))
+        # Samples: plain squares fading with age, the newest three round with a halo.
+        glow = []
+        for hist, sign, role, neg in d.series:
+            n, cap = len(hist.d), hist.d.maxlen
+            for i, v in enumerate(hist.d):
+                if not isinstance(v, (int, float)):
+                    continue
+                v *= sign
+                if d.log and d.reach(v) == 0:
+                    continue
+                age = n - 1 - i
+                col = c[neg if v < 0 else role]
+                a = -math.pi / 2 - ((age * d.sps) % d.period) / d.period * 2 * math.pi
+                x, y = at(d.r_of(v, r0, r1), a)
+                if age < 3:
+                    glow.append((age, x, y, col))
+                    continue
+                dr.rectangle((x - u, y - u, x + u, y + u), fill=mix(col, c["bg"], 1 - 0.8 * math.sqrt(age / cap)))
+        for age, x, y, col in sorted(glow, reverse=True):
+            r = (2.2 - age * 0.4) * u
+            for k in range(6, 0, -1):          # radial gradient 0.5 -> 0 out to 3r
+                rr = r * (1 + 2 * k / 6)
+                dr.ellipse((x - rr, y - rr, x + rr, y + rr), fill=mix(col, c["bg"], 0.5 * (1 - k / 6) + 0.06))
+            dr.ellipse((x - r, y - r, x + r, y + r), fill=col)
+        return im.reduce(ss)
+
+    # -- the bar's CPU core rings --
+    def cpu_rings(self, s, D):
+        ss, c = self.SS, self.c
+        S = D * ss
+        im = self.Image.new("RGB", (S, S), c["bg"])
+        dr = self.ImageDraw.Draw(im)
+        f = S / 150                            # the bar draws these in a 150 px square
+        cx = cy = S / 2
+        tiers = [k for k in ("P", "E", "LP", "") if k in s.kinds]
+        wedge = 0.5
+        start0, sweep = -math.pi / 2 + wedge / 2, 2 * math.pi - wedge
+        lw, r = 8 * f, 30 * f
+        if len(tiers) > 3:
+            lw, r = 6 * f, 24 * f
+        labels = []
+        for tier in tiers:
+            cores = [i for i, k in enumerate(s.kinds) if k == tier]
+            seg, gap = sweep / len(cores), 0.07
+            box = (cx - r, cy - r, cx + r, cy + r)
+            for j, core in enumerate(cores):
+                a0, span = start0 + j * seg + gap / 2, seg - gap
+                deg0 = math.degrees(a0)
+                dr.arc(box, deg0, math.degrees(a0 + span), fill=mix(c["dim"], c["bg"], 0.22), width=int(lw))
+                load = max(0.0, min(1.0, s.core_load[core] if core < len(s.core_load) else 0))
+                if load > 0.005:
+                    dr.arc(box, deg0, math.degrees(a0 + max(0.03, span * load)), fill=c[load_role(load)],
+                           width=int(lw))
+                mx = s.max_mhz[core] if core < len(s.max_mhz) else 0
+                if mx > 0 and core < len(s.freqs):    # clock tick: length = clock / max
+                    share = max(0.0, min(1.0, s.freqs[core] / mx))
+                    am = a0 + span / 2
+                    ra, rb = r + lw / 2 + f, r + lw / 2 + f + f + 5 * f * share
+                    dr.line((cx + ra * math.cos(am), cy + ra * math.sin(am),
+                             cx + rb * math.cos(am), cy + rb * math.sin(am)),
+                            fill=mix(c["fg"], c["bg"], 0.75), width=max(1, int(1.5 * f)))
+            if tier:
+                labels.append((tier, cy - r))
+            r += 16 * f if len(tiers) <= 3 else 12 * f
+        out = im.reduce(ss)
+        d2 = self.ImageDraw.Draw(out)
+        for tier, y in labels:
+            d2.text((D / 2, y / ss), tier, fill=c["muted"], font=self.font(8 * f / ss, True), anchor="mm")
+        return out
+
+    def cpu_centre(self, dr, s, G, cx, cy, D):
+        f = D / 150
+        dr.text((cx, cy - 2 * f), pct(s.cpu_load), fill=self.role("fg"), font=self.font(15 * f, True), anchor="mb")
+        if s.temp is not None:
+            dr.text((cx, cy), temp_text(s.temp, G), fill=self.c["red"], font=self.font(10 * f), anchor="mt")
+
+
+class Framebuffer:
+    """/dev/fb0, written in place. Geometry from sysfs, pixel layout from
+    FBIOGET_VSCREENINFO; only bands of rows that changed are rewritten."""
+
+    def __init__(self, path=FB_DEV):
+        import fcntl
+        import struct
+        vs = (rd(FB_SYS + "virtual_size") or "0,0").split(",")
+        self.vw, self.vh = int(vs[0]), int(vs[1])
+        self.bpp = int(num(FB_SYS + "bits_per_pixel") or 0)
+        self.stride = int(num(FB_SYS + "stride") or 0)
+        if self.bpp != 32:
+            sys.exit("hud --fb: %s is %d bpp; only 32 bpp is supported" % (path, self.bpp))
+        try:
+            self.fd = os.open(path, os.O_RDWR)
+        except PermissionError:
+            sys.exit("hud --fb: no permission to write %s (root:video, mode 0660).\n"
+                     "Add yourself to the video group (users.users.<you>.extraGroups = [ \"video\" ]),\n"
+                     "rebuild, and log in again. Meanwhile: hud --fb --png frame.png" % path)
+        except OSError as e:
+            sys.exit("hud --fb: can't open %s: %s" % (path, e))
+        self.w, self.h, self.xoff, self.yoff, self.mode = self.vw, self.vh, 0, 0, "BGRX"
+        try:
+            v = struct.unpack("8I12I", fcntl.ioctl(self.fd, FBIOGET_VSCREENINFO, bytes(160))[:80])
+            self.w, self.h = v[0], v[1]
+            self.xoff, self.yoff = v[4], v[5]
+            red, green, blue = v[8], v[11], v[14]
+            if (red, green, blue) == (0, 8, 16):
+                self.mode = "RGBX"
+            elif (red, green, blue) != (16, 8, 0):
+                sys.exit("hud --fb: unsupported pixel layout (red/green/blue at bits %d/%d/%d)"
+                         % (red, green, blue))
+        except OSError:
+            pass                                  # keep sysfs geometry and XRGB8888
+        self.base = self.yoff * self.stride + self.xoff * 4
+        self.prev = None
+
+    def show(self, img):
+        if self.stride != img.width * 4:          # rows are padded: draw into a stride-wide image
+            from PIL import Image as PImage
+            full = PImage.new("RGB", (self.stride // 4, img.height))
+            full.paste(img, (0, 0))
+            img = full
+        data = img.tobytes("raw", self.mode)
+        band = self.stride * 16
+        prev = self.prev
+        for off in range(0, len(data), band):
+            chunk = data[off:off + band]
+            if prev is None or prev[off:off + band] != chunk:
+                os.pwrite(self.fd, chunk, self.base + off)
+        self.prev = data
+
+    def clear(self):
+        os.pwrite(self.fd, bytes(self.stride * self.h), self.base)
+
+
+def fb_size():
+    vs = (rd(FB_SYS + "virtual_size") or "2880,1920").split(",")
+    return int(vs[0]), int(vs[1])
+
+
+def run_fb(args):
+    import fcntl
+    import select
+    import signal
+    import termios
+    import tty
+    fb = Framebuffer()
+    try:
+        name = os.ttyname(0)
+    except OSError:
+        name = ""
+    if not re.match(r"/dev/tty\d+$", name):
+        sys.exit("hud --fb draws on the Linux text console; run it on a VT (e.g. Ctrl+Alt+F3),\n"
+                 "or write a frame to a file with: hud --fb --png frame.png")
+    theme = args.theme or system_theme()
+    rend = FbRenderer(fb.w, fb.h, theme)
+    s = Sampler(args.interval)
+    fd = 0
+    old = termios.tcgetattr(fd)
+    graphics = False
+
+    def stop(*_):
+        raise SystemExit(0)
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGHUP, stop)
+    try:
+        tty.setcbreak(fd)
+        os.write(1, b"\033[?25l\033[2J\033[H")    # hide the cursor, clear the text
+        try:
+            fcntl.ioctl(fd, KDSETMODE, KD_GRAPHICS)  # stop the console drawing over us
+            graphics = True
+        except OSError:
+            pass
+        next_theme = time.monotonic() + 60
+        while True:
+            s.tick()
+            now = time.monotonic()
+            if not args.theme and now >= next_theme:
+                next_theme = now + 60
+                t = system_theme()
+                if t != rend.theme:
+                    rend.set_theme(t)
+            fb.show(rend.render(s))
+            deadline = now + args.interval
+            while True:
+                wait = deadline - time.monotonic()
+                if wait <= 0:
+                    break
+                r, _, _ = select.select([fd], [], [], wait)
+                if r:
+                    ch = os.read(fd, 1)
+                    if ch in (b"q", b"Q", b"\x1b", b""):
+                        return
+    except KeyboardInterrupt:
+        pass
+    finally:
+        try:
+            fb.clear()
+        except OSError:
+            pass
+        if graphics:
+            try:
+                fcntl.ioctl(fd, KDSETMODE, KD_TEXT)
+            except OSError:
+                pass
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        os.write(1, b"\033[?25h\033[2J\033[H")
+
+
+def fb_png(args):
+    W, H = (int(v) for v in args.size.lower().split("x")) if args.size else fb_size()
+    s = Sampler(args.interval)
+    for k in range(max(1, args.samples)):
+        if k:
+            time.sleep(min(args.interval, 1.0) if args.samples == 2 else args.interval)
+        s.tick(sync_wifi=True)
+    rend = FbRenderer(W, H, args.theme or system_theme())
+    t0 = time.perf_counter()
+    img = rend.render(s)
+    ms = (time.perf_counter() - t0) * 1000
+    img.save(args.png)
+    print("hud: %dx%d frame rendered in %.0f ms -> %s" % (W, H, ms, args.png), file=sys.stderr)
 
 
 # ---------------------------------------------------------------- terminal
@@ -1147,13 +1630,25 @@ def main():
     ap.add_argument("--mono", action="store_true", help="no colour")
     ap.add_argument("--once", action="store_true", help="print one frame to stdout and exit")
     ap.add_argument("--samples", type=int, default=2, help="with --once: samples to take first (default 2)")
-    ap.add_argument("--size", help="with --once: COLSxROWS (default: the terminal's size)")
+    ap.add_argument("--size", help="with --once: COLSxROWS (with --png: pixels; default: the screen's size)")
+    ap.add_argument("--fb", action="store_true", help="draw on the framebuffer (/dev/fb0) of a text console")
+    ap.add_argument("--png", metavar="FILE", help="with --fb: render one frame to a PNG file instead")
+    t = ap.add_mutually_exclusive_group()
+    t.add_argument("--light", dest="theme", action="store_const", const="light", help="--fb: Solarized light")
+    t.add_argument("--dark", dest="theme", action="store_const", const="dark",
+                   help="--fb: Solarized dark (default: follow the desktop's colour scheme)")
     args = ap.parse_args()
     args.interval = max(0.2, args.interval)
     try:
         locale.setlocale(locale.LC_ALL, "")
     except locale.Error:
         pass
+    if args.png:
+        fb_png(args)
+        return
+    if args.fb:
+        run_fb(args)
+        return
     mode = detect_mode(args)
     if args.once:
         if args.size:
