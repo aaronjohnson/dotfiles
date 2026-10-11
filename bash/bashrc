@@ -13,18 +13,15 @@ if [[ $TERM == linux ]]; then
   if [[ -n $WAYLAND_DISPLAY ]]; then
     # wl-copy/wl-paste now reach the desktop clipboard, and so does Emacs -nw
     # (~/.emacs.d/init.el switches to wl-clipboard when WAYLAND_DISPLAY is set).
-    # At the prompt: Ctrl+V inserts the clipboard (Ctrl+Shift+C in kitty),
-    # Alt+V the highlighted text (the primary selection, as middle-click).
+    # Alt+V at the prompt inserts the desktop clipboard (what a selection or
+    # Ctrl+Shift+C in kitty copied). Ctrl+V keeps its standard meaning
+    # ("insert the next key literally").
     _paste_desktop() {
       local clip
-      clip=$(wl-paste --no-newline "$@" 2>/dev/null) || return
+      clip=$(wl-paste --no-newline 2>/dev/null) || return
       READLINE_LINE=${READLINE_LINE:0:READLINE_POINT}$clip${READLINE_LINE:READLINE_POINT}
       READLINE_POINT=$((READLINE_POINT + ${#clip}))
     }
-    # Ctrl+V is the terminal's "literal next" (lnext) key, and readline re-binds
-    # terminal special keys to their defaults on every prompt; free it first.
-    stty lnext undef 2>/dev/null
-    bind -x '"\C-v": _paste_desktop'
-    bind -x '"\ev": _paste_desktop --primary'
+    bind -x '"\ev": _paste_desktop'
   fi
 fi
