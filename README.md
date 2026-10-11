@@ -18,6 +18,7 @@ tofi, mako, GTK apps and Emacs follow.
 | `mako/` | Notifications that age out and group repeats |
 | `fcitx5/` | Japanese input (Anthy): 半角/全角 toggles, 変換/無変換 on/off |
 | `bin/` | Scripts: `hud` (the bar's stats as a terminal UI with polar dials), `usbc-power` (USB-C charger report) |
+| `bash/` | `bashrc`: `~/dotfiles/bin` on PATH; on the text console, the desktop clipboard via `wl-paste` (Ctrl+V at the prompt) |
 | `emacs/` | `init.el`: Wayland clipboard from the terminal, Solarized that follows the switch, nix-mode |
 
 ## Install

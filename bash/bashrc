@@ -1,0 +1,25 @@
+# ~/.bashrc (symlink to ~/dotfiles/bash/bashrc). NixOS's /etc/bashrc runs first.
+[[ $- == *i* ]] || return   # the rest is for interactive shells only
+
+# Personal commands (hud, usbc-power, …).
+PATH="$HOME/dotfiles/bin:$PATH"
+
+# On the Linux text console, borrow the clipboard of the running Hyprland session.
+# The console has no clipboard of its own and can't tell Ctrl+Shift+V from Ctrl+V.
+if [[ $TERM == linux ]]; then
+  for sock in "$XDG_RUNTIME_DIR"/wayland-[0-9]; do
+    [[ -S $sock ]] && export WAYLAND_DISPLAY=${sock##*/} && break
+  done
+  if [[ -n $WAYLAND_DISPLAY ]]; then
+    # wl-copy/wl-paste now reach the desktop clipboard, and so does Emacs -nw
+    # (~/.emacs.d/init.el switches to wl-clipboard when WAYLAND_DISPLAY is set).
+    # Ctrl+V at the prompt inserts the desktop clipboard at the cursor.
+    _paste_desktop_clipboard() {
+      local clip
+      clip=$(wl-paste --no-newline 2>/dev/null) || return
+      READLINE_LINE=${READLINE_LINE:0:READLINE_POINT}$clip${READLINE_LINE:READLINE_POINT}
+      READLINE_POINT=$((READLINE_POINT + ${#clip}))
+    }
+    bind -x '"\C-v": _paste_desktop_clipboard'
+  fi
+fi
