@@ -1,0 +1,3 @@
+# ~/.bash_profile (symlink to ~/dotfiles/bash/bash_profile). Login shells, e.g. on a
+# text console, read this instead of ~/.bashrc, so load ~/.bashrc from here.
+[[ -f ~/.bashrc ]] && . ~/.bashrc
