@@ -7,6 +7,9 @@ PATH="$HOME/dotfiles/bin:$PATH"
 # On the Linux text console, borrow the clipboard of the running Hyprland session.
 # The console has no clipboard of its own and can't tell Ctrl+Shift+V from Ctrl+V.
 if [[ $TERM == linux ]]; then
+  # Alt+key sends Escape then the key (what bash and Emacs expect for Meta),
+  # not the key with its high bit set, which is the console's default.
+  setmetamode esc >/dev/null 2>&1
   for sock in "$XDG_RUNTIME_DIR"/wayland-[0-9]; do
     [[ -S $sock ]] && export WAYLAND_DISPLAY=${sock##*/} && break
   done
