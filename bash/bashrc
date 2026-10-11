@@ -21,6 +21,9 @@ if [[ $TERM == linux ]]; then
       READLINE_LINE=${READLINE_LINE:0:READLINE_POINT}$clip${READLINE_LINE:READLINE_POINT}
       READLINE_POINT=$((READLINE_POINT + ${#clip}))
     }
+    # Ctrl+V is the terminal's "literal next" (lnext) key, and readline re-binds
+    # terminal special keys to their defaults on every prompt; free it first.
+    stty lnext undef 2>/dev/null
     bind -x '"\C-v": _paste_desktop'
     bind -x '"\ev": _paste_desktop --primary'
   fi
