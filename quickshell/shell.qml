@@ -376,6 +376,26 @@ ShellRoot {
         onTriggered: root.readBrightness()
     }
 
+    // ---- Privacy switches ----
+    // The privacy-switches service (~/nixos/privacy.nix) asks the EC and rewrites
+    // this file only when a switch moves: "<mic> <camera>", each "on" or "off".
+    // Watching it means the bar wakes only on a change.
+    property var privacy: null
+
+    FileView {
+        id: privacyFile
+        path: "/run/privacy-switches/state"
+        blockLoading: true
+        printErrors: false
+        watchChanges: true
+        onFileChanged: reload()
+        onLoaded: {
+            var f = text().trim().split(" ");
+            if (f.length === 2) root.privacy = { mic: f[0] === "on", cam: f[1] === "on" };
+        }
+        onLoadFailed: root.privacy = null
+    }
+
     // ---- NPU ----
     // The intel_vpu driver keeps a running total of NPU busy time. Reading it
     // (on the network graph's 2s tick) leaves the NPU asleep, so watching costs nothing.
@@ -1597,6 +1617,60 @@ ShellRoot {
                   WheelHandler {
                     acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
                     onWheel: event => root.stepBrightness(event.angleDelta.y > 0)
+                  }
+                }
+              }
+
+              // ---- Privacy switches: mic and camera, red and struck through when switched off ----
+              Row {
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 7
+                visible: root.privacy !== null
+
+                // Microphone: a capsule on a stand.
+                Item {
+                  id: micIcon
+                  anchors.verticalCenter: parent.verticalCenter
+                  width: 12
+                  height: 16
+                  property bool off: root.privacy !== null && !root.privacy.mic
+                  property color ink: off ? "black" : root.c.green
+
+                  Rectangle { x: 3; y: 0; width: 6; height: 10; radius: 3; color: micIcon.ink }
+                  Rectangle { x: 5; y: 10; width: 2; height: 4; color: micIcon.ink }
+                  Rectangle { x: 2; y: 14; width: 8; height: 2; radius: 1; color: micIcon.ink }
+                  Rectangle {
+                    visible: micIcon.off
+                    anchors.centerIn: parent
+                    width: 3; height: 20; rotation: 45
+                    color: "black"
+                    border.color: root.c.bg
+                    border.width: 1
+                  }
+                }
+
+                // Camera: a body with a lens and a viewfinder bump.
+                Item {
+                  id: camIcon
+                  anchors.verticalCenter: parent.verticalCenter
+                  width: 16
+                  height: 13
+                  property bool off: root.privacy !== null && !root.privacy.cam
+                  property color ink: off ? "black" : root.c.green
+
+                  Rectangle { x: 5; y: 0; width: 6; height: 3; radius: 1; color: camIcon.ink }
+                  Rectangle {
+                    y: 2; width: 16; height: 11; radius: 2
+                    color: camIcon.ink
+                    Rectangle { anchors.centerIn: parent; width: 6; height: 6; radius: 3; color: root.c.bg }
+                  }
+                  Rectangle {
+                    visible: camIcon.off
+                    anchors.centerIn: parent
+                    width: 3; height: 20; rotation: 45
+                    color: "black"
+                    border.color: root.c.bg
+                    border.width: 1
                   }
                 }
               }
