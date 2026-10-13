@@ -396,6 +396,15 @@ ShellRoot {
         onLoadFailed: root.privacy = null
     }
 
+    // The watch can't see a file that doesn't exist yet, so until the service
+    // has written one, look again every 10 s. Stops once there is data.
+    Timer {
+        interval: 10000
+        running: root.privacy === null
+        repeat: true
+        onTriggered: privacyFile.reload()
+    }
+
     // ---- NPU ----
     // The intel_vpu driver keeps a running total of NPU busy time. Reading it
     // (on the network graph's 2s tick) leaves the NPU asleep, so watching costs nothing.
@@ -1364,8 +1373,14 @@ ShellRoot {
     // then fades in over the windows (Hyprland's layer animation) and fades out
     // a second after the pointer leaves it. While hidden, windows get the full
     // screen height. Set autoHide to false for an always-visible bar that
-    // reserves its 40 px, as before.
+    // reserves its 40 px, as before. Super+T flips it until quickshell restarts
+    // (`qs ipc call bar toggleAutoHide`).
     property bool autoHide: true
+
+    IpcHandler {
+        target: "bar"
+        function toggleAutoHide(): void { root.autoHide = !root.autoHide; }
+    }
 
     Variants {
         model: Quickshell.screens

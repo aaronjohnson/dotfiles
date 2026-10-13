@@ -279,6 +279,8 @@ local closeWindowBind = hl.bind(mainMod .. " + C", hl.dsp.window.close())
 hl.bind(mainMod .. " + M", hl.dsp.exec_cmd("command -v hyprshutdown >/dev/null 2>&1 && hyprshutdown || hyprctl dispatch 'hl.dsp.exit()'"))
 hl.bind(mainMod .. " + E", hl.dsp.exec_cmd(fileManager))
 hl.bind(mainMod .. " + B", hl.dsp.exec_cmd("epiphany"))
+-- Super+T: top bar autohide on/off (always visible, reserving its space, when off).
+hl.bind(mainMod .. " + T", hl.dsp.exec_cmd("qs ipc call bar toggleAutoHide"))
 hl.bind(mainMod .. " + L", hl.dsp.exec_cmd("loginctl lock-session"))  -- lock screen (hypridle runs hyprlock)
 hl.bind(mainMod .. " + V", hl.dsp.window.float({ action = "toggle" }))
 hl.bind(mainMod .. " + R", hl.dsp.exec_cmd(menu))
