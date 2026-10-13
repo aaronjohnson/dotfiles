@@ -86,6 +86,32 @@ bump_nixos() {
   echo "~/nixos: flake.lock staged, draft written."
 }
 
+# Does ~/nixos build to something other than the running system? Builds as the user
+# (no password; usually cached), so a switch that would change nothing isn't offered.
+# 0: different, 1: the same, 2: doesn't build.
+needs_switch() {
+  local built
+  printf '\e[2mbuilding ~/nixos to compare with the running system...\e[0m\n'
+  built=$(cd "$nixos" && nix build --no-link --print-out-paths \
+    ".#nixosConfigurations.hadron.config.system.build.toplevel" 2>"${XDG_RUNTIME_DIR:-/tmp}/land-build.log") || {
+    tail -5 "${XDG_RUNTIME_DIR:-/tmp}/land-build.log"
+    notify "~/nixos doesn't build ✗" "No switch offered; see the land window." 0
+    return 2
+  }
+  [[ "$built" != "$(readlink /run/current-system)" ]]
+}
+
+# Offer a switch if it would change something; return 0 if switched or already running.
+offer_switch() {
+  local prompt="$1" state
+  needs_switch; state=$?
+  case $state in
+    1) echo "The running system is already this configuration: nothing to switch."; return 0 ;;
+    2) return 1 ;;
+  esac
+  ask "$prompt" && switch_nixos
+}
+
 # Switch to ~/nixos, the password asked through polkit.
 switch_nixos() {
   local log="${XDG_RUNTIME_DIR:-/tmp}/nixos-switch.log" gen
@@ -120,8 +146,8 @@ if has_draft "$nixos"; then work=1; commit_repo "$nixos"; fi
 
 if [[ "$(git -C "$nixos" rev-parse HEAD)" != "$start_head" ]]; then
   echo
-  if ask "Switch to the new ~/nixos now?"; then
-    switch_nixos && { echo; ask "Push ~/nixos?" && git -C "$nixos" push; }
+  if offer_switch "Switch to the new ~/nixos now?"; then
+    echo; ask "Push ~/nixos?" && git -C "$nixos" push
   fi
 fi
 
@@ -137,7 +163,7 @@ if (( work == 0 )); then
     git -C "$r" log -3 --format='  %C(yellow)%h%C(reset) %<(70,trunc)%s %C(dim)(%cr)%C(reset)' --color=always
   done
   echo
-  if ask "Switch to ~/nixos as it is?"; then switch_nixos; fi
+  offer_switch "Switch to ~/nixos as it is?"
 fi
 printf '\n\e[2mDone. Press any key to close.\e[0m'
 read -rsn1 _
