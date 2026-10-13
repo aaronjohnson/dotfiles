@@ -64,6 +64,7 @@ local menu        = os.getenv("HOME") .. "/.config/tofi/launch.sh"  -- tofi, Sol
 
 hl.on("hyprland.start", function ()
   hl.exec_cmd("quickshell")  -- top bar, loads ~/.config/quickshell/shell.qml
+  hl.exec_cmd("~/dotfiles/bin/auto-brightness")  -- screen follows the light sensor (Super+F8 toggles)
 end)
 
 
@@ -279,6 +280,36 @@ local closeWindowBind = hl.bind(mainMod .. " + C", hl.dsp.window.close())
 hl.bind(mainMod .. " + M", hl.dsp.exec_cmd("command -v hyprshutdown >/dev/null 2>&1 && hyprshutdown || hyprctl dispatch 'hl.dsp.exit()'"))
 hl.bind(mainMod .. " + E", hl.dsp.exec_cmd(fileManager))
 hl.bind(mainMod .. " + B", hl.dsp.exec_cmd("epiphany"))
+
+-- Alt+C / Alt+V copy and paste in any window (Chromebook/Mac habit). Terminals use
+-- Ctrl+Shift+C/V for copy/paste, since Ctrl+C there means "interrupt".
+local function clip(key)
+    return function()
+        local w = hl.get_active_window()
+        local terminal = w and (w.class == "kitty" or w.class == "foot" or w.class == "Alacritty")
+        hl.dispatch(hl.dsp.send_shortcut({ mods = terminal and "CTRL SHIFT" or "CTRL", key = key }))
+    end
+end
+hl.bind("ALT + C", clip("C"))
+hl.bind("ALT + V", clip("V"))
+
+-- Super+F12: land changes: commit the drafted messages, push and bump ~/nixos, switch
+-- (password through polkit), in a small floating window, with mako notifications.
+hl.bind(mainMod .. " + F12", hl.dsp.exec_cmd("kitty --class land --title 'Land' -e ~/dotfiles/bin/land"))
+
+-- Super+F9: screenshot of the screen; +Shift: drag a region; +Alt: the focused window.
+-- Saved to ~/Pictures/Screenshots and copied to the clipboard (hyprshot notifies).
+local shots = "~/Pictures/Screenshots"
+hl.bind(mainMod .. " + F9",         hl.dsp.exec_cmd("hyprshot -m output -m active -o " .. shots))
+hl.bind(mainMod .. " + SHIFT + F9", hl.dsp.exec_cmd("hyprshot -m region -o " .. shots))
+hl.bind(mainMod .. " + ALT + F9",   hl.dsp.exec_cmd("hyprshot -m window -m active -o " .. shots))
+
+-- Super+F8: auto-brightness (light sensor) on/off.
+hl.bind(mainMod .. " + F8", hl.dsp.exec_cmd("~/dotfiles/bin/auto-brightness toggle"))
+
+-- Super+F10: dismiss all notifications.
+hl.bind(mainMod .. " + F10", hl.dsp.exec_cmd("makoctl dismiss --all"))
+
 -- Super+F7: software privacy, built-in mic and camera off/on together (privacy-toggle in ~/nixos).
 hl.bind(mainMod .. " + F7", hl.dsp.exec_cmd("privacy-toggle"))
 -- Super+T: top bar autohide on/off (always visible, reserving its space, when off).
@@ -370,6 +401,14 @@ hl.window_rule({
 --     no_anim = true,
 -- })
 -- overlayLayerRule:set_enabled(false)
+
+hl.window_rule({
+    name   = "land-popup",
+    match  = { class = "^land$" },
+    float  = true,
+    size   = "1000 640",
+    center = true,
+})
 
 -- Hyprland-run windowrule
 hl.window_rule({

@@ -17,7 +17,7 @@ tofi, mako, GTK apps and Emacs follow.
 | `yazi/` | Terminal file manager on Super+E, opening files in Emacs |
 | `mako/` | Notifications that age out and group repeats |
 | `fcitx5/` | Japanese input (Anthy): 半角/全角 toggles, 変換/無変換 on/off |
-| `bin/` | Scripts: `hud` (the bar's stats as a terminal UI with polar dials), `usbc-power` (USB-C charger report) |
+| `bin/` | Scripts: `hud` (the bar's stats as a terminal UI with polar dials), `usbc-power` (USB-C charger report), `land` (Super+F12: commit drafted messages, push and bump ~/nixos, switch through polkit), `auto-brightness` (screen follows the light sensor; Hyprland starts it, Super+F8 toggles) |
 | `bash/` | `bashrc`: `~/dotfiles/bin` on PATH; on the text console, the desktop clipboard via `wl-paste` (Ctrl+V at the prompt) |
 | `emacs/` | `init.el`: Wayland clipboard from the terminal, Solarized that follows the switch, nix-mode |
 

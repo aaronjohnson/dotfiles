@@ -1,0 +1,127 @@
+#!/usr/bin/env python3
+"""Auto-brightness: follow the ambient light sensor above the screen.
+
+  auto-brightness          run the daemon (started by Hyprland at login)
+  auto-brightness toggle   turn it on/off (Super+F8), with a notification
+
+Brightness is handled on the same perceptual scale as the brightness keys
+(brightnessctl -e4: raw = max * p^4). When you press a brightness key, the
+daemon notices the change and keeps that offset from its curve, so it learns
+your preference instead of fighting you. It stands aside while hypridle has
+dimmed or blanked the screen (hypridle touches $XDG_RUNTIME_DIR/auto-brightness.pause).
+"""
+import math, os, subprocess, sys, time
+
+ALS = "/sys/bus/iio/devices/iio:device0/in_illuminance_raw"
+BL = "/sys/class/backlight/intel_backlight"
+RUN = os.environ.get("XDG_RUNTIME_DIR", "/run/user/%d" % os.getuid())
+PAUSE = os.path.join(RUN, "auto-brightness.pause")
+STATE = os.path.expanduser("~/.local/state/auto-brightness")
+OFF = os.path.join(STATE, "off")
+BIAS = os.path.join(STATE, "bias")
+
+# (lux, perceptual brightness 0-1): dark room, dim room, indoors, bright room, shade, sun
+CURVE = [(0, 0.40), (10, 0.52), (50, 0.62), (200, 0.74), (1000, 0.88), (5000, 1.0)]
+EXP = 4          # same as brightnessctl -e4
+STEP = 0.02      # move only when the target is this far off (perceptual)
+TAU = 6.0        # seconds of light-level smoothing
+
+
+def read(path, default=None):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return default
+
+
+def log(*a):
+    if os.environ.get("AB_DEBUG"):
+        print(time.strftime("%T"), *a, flush=True)
+
+
+def notify(title, body):
+    body = time.strftime("%H:%M") + " · " + body
+    subprocess.run(["notify-send", "-a", "Brightness", "-t", "3000", title, body],
+                   stderr=subprocess.DEVNULL)
+
+
+def curve(lux):
+    x = math.log10(lux + 1)
+    pts = [(math.log10(l + 1), p) for l, p in CURVE]
+    if x <= pts[0][0]:
+        return pts[0][1]
+    for (x0, p0), (x1, p1) in zip(pts, pts[1:]):
+        if x <= x1:
+            return p0 + (p1 - p0) * (x - x0) / (x1 - x0)
+    return pts[-1][1]
+
+
+MAX = int(read(BL + "/max_brightness", "1"))
+
+
+def get_p():
+    return (int(read(BL + "/brightness", "0")) / MAX) ** (1 / EXP)
+
+
+def set_p(p):
+    p = min(1.0, max(0.15, p))
+    with open(BL + "/brightness", "w") as f:
+        f.write(str(max(1, round(MAX * p ** EXP))))
+
+
+def ramp(a, b, steps=10):
+    for i in range(1, steps + 1):
+        set_p(a + (b - a) * i / steps)
+        time.sleep(0.05)
+
+
+def daemon():
+    os.makedirs(STATE, exist_ok=True)
+    bias = float(read(BIAS, "0"))
+    loglux = math.log10(float(read(ALS, "50")) + 1)
+    last = None          # the level we last set (None: we haven't, or something else took over)
+    while True:
+        time.sleep(1)
+        if os.path.exists(OFF) or os.path.exists(PAUSE):
+            last = None
+            continue
+        lux = read(ALS)
+        if lux is None:
+            continue
+        loglux += (math.log10(float(lux) + 1) - loglux) / TAU
+        cur = get_p()
+        base = curve(10 ** loglux - 1)
+        if last is None:
+            last = cur   # just (re)started or unpaused: take the screen as it is
+            if read(BIAS) is None:   # very first run: today's brightness is the preference
+                bias = cur - base
+                with open(BIAS, "w") as f:
+                    f.write("%.3f\n" % bias)
+        elif abs(cur - last) > 0.01:
+            # someone else (the brightness keys) changed it: keep that as the preference
+            bias = cur - base
+            log("manual change %.3f -> %.3f, bias=%.3f" % (last, cur, bias))
+            with open(BIAS, "w") as f:
+                f.write("%.3f\n" % bias)
+            last = cur
+            continue
+        target = min(1.0, max(0.15, base + bias))
+        log("lux=%s base=%.3f bias=%.3f cur=%.3f last=%.3f target=%.3f" % (lux, base, bias, cur, last, target))
+        if abs(target - cur) >= STEP:
+            ramp(cur, target)
+            last = get_p()
+
+
+def toggle():
+    os.makedirs(STATE, exist_ok=True)
+    if os.path.exists(OFF):
+        os.remove(OFF)
+        notify("☀ Auto-brightness on", "following the light sensor")
+    else:
+        open(OFF, "w").close()
+        notify("☀ Auto-brightness off", "brightness keys only")
+
+
+if __name__ == "__main__":
+    toggle() if sys.argv[1:] == ["toggle"] else daemon()

@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+# land: land changes, from drafted commits to the running system. Super+F12 in Hyprland.
+#
+# Every outward step asks first:
+#   1. commit each repo with a drafted message waiting in .git/COMMIT_DRAFT (written by
+#      Claude), after showing the staged changes; ~/nixos last;
+#   2. for a repo ~/nixos takes as a flake input (jantar, nixos-intel-npu): push it, point
+#      ~/nixos's lock at the new commit, build, and draft the ~/nixos commit;
+#   3. commit ~/nixos, switch to it (password through polkit: pkexec), then push it.
+# With no drafts waiting it shows the recent commits and offers to switch to ~/nixos as it is.
+set -u
+notify() {
+  set -- "$1" "$(date +%H:%M) · $2" "${3:-6000}"   # timestamp every notification
+  if command -v notify-send >/dev/null; then notify-send -a git -t "${3:-6000}" "$1" "$2"
+  else gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications \
+    --method org.freedesktop.Notifications.Notify "git" 0 "" "$1" "$2" "[]" "{}" "${3:-6000}" >/dev/null 2>&1; fi
+}
+ask() { local ans; read -rp "$1 [y/N] " ans; [[ "$ans" == [yY]* ]]; }
+pause() { read -rp "Press Enter to continue." _; }
+
+nixos="$HOME/nixos"
+# Repos ~/nixos takes as flake inputs: path -> input name.
+declare -A inputs=(["$HOME/src/jantar"]=jantar ["$HOME/nixos-intel-npu"]=nixos-intel-npu)
+others=("$HOME/dotfiles" "$HOME/nixos-intel-npu" "$HOME"/src/*/)
+start_head=$(git -C "$nixos" rev-parse HEAD 2>/dev/null)
+
+has_draft() { [[ -f "$1/.git/COMMIT_DRAFT" ]]; }
+
+# Show one repo's staged changes and draft; commit on yes. Returns 0 if it committed.
+commit_repo() {
+  local r="$1" name="${1/#"$HOME"/\~}"
+  printf '\n\e[1m== %s ==\e[0m\n' "$name"
+  if git -C "$r" diff --cached --quiet; then
+    echo "A draft is waiting, but nothing is staged (it may already be committed):"
+    sed 's/^/  /' "$r/.git/COMMIT_DRAFT" | head -3
+    if ask "Delete this stale draft?"; then rm "$r/.git/COMMIT_DRAFT"; notify "Removed stale draft" "$name"; fi
+    return 1
+  fi
+  printf '\e[1mStaged changes:\e[0m\n'
+  git -C "$r" -c color.ui=always diff --cached --stat
+  printf '\n\e[1mMessage:\e[0m\n'
+  printf '\e[36m┌%s\e[0m\n' "$(printf '─%.0s' {1..70})"
+  sed 's/^/\x1b[36m│\x1b[0m /' "$r/.git/COMMIT_DRAFT"
+  printf '\e[36m└%s\e[0m\n\n' "$(printf '─%.0s' {1..70})"
+  ask "Commit $name?" || return 1
+  if git -C "$r" commit -q -F "$r/.git/COMMIT_DRAFT" && rm "$r/.git/COMMIT_DRAFT"; then
+    notify "Committed $name ✓" "$(git -C "$r" log --oneline -1)"
+    return 0
+  fi
+  notify "Commit failed: $name ✗" "See the commit window." 0
+  pause
+  return 1
+}
+
+# After committing a flake input: push it, point ~/nixos at it, build, draft the bump.
+bump_nixos() {
+  local r="$1" input="$2" name="${1/#"$HOME"/\~}" rev subject
+  ask "Push $name and update ~/nixos to it?" || return
+  printf '\e[2mgit push\e[0m\n'
+  if ! git -C "$r" push; then notify "Push failed: $name ✗" "Nothing else changed." 0; pause; return; fi
+  rev=$(git -C "$r" rev-parse --short HEAD)
+  subject=$(git -C "$r" log -1 --format=%s)
+  # --refresh: Nix otherwise reuses its cached idea of the branch for an hour.
+  printf '\e[2mnix flake update %s --refresh\e[0m\n' "$input"
+  if ! (cd "$nixos" && nix flake update "$input" --refresh); then
+    notify "Updating ~/nixos failed ✗" "$input: see the commit window." 0; pause; return
+  fi
+  if git -C "$nixos" diff --quiet -- flake.lock; then
+    echo "~/nixos already points at $input $rev."
+    return
+  fi
+  printf '\e[2mbuilding the new system (no switch yet)...\e[0m\n'
+  if ! (cd "$nixos" && nix build --no-link ".#nixosConfigurations.hadron.config.system.build.toplevel" 2>&1 | tail -5; exit "${PIPESTATUS[0]}"); then
+    notify "~/nixos doesn't build with $input $rev ✗" "flake.lock is updated but not staged." 0
+    pause
+    return
+  fi
+  git -C "$nixos" add flake.lock
+  local draft="$nixos/.git/COMMIT_DRAFT"
+  if [[ -f "$draft" ]]; then
+    # Another draft is waiting: add the bump to it.
+    printf '\nAlso bumps %s to %s: %s\n' "$input" "$rev" "$subject" >> "$draft"
+  else
+    printf '%s: %s\n\nBumps %s to %s.\n' "$input" "$subject" "$input" "$rev" > "$draft"
+  fi
+  echo "~/nixos: flake.lock staged, draft written."
+}
+
+# Switch to ~/nixos, the password asked through polkit.
+switch_nixos() {
+  local log="${XDG_RUNTIME_DIR:-/tmp}/nixos-switch.log" gen
+  notify "NixOS switch" "Approve in the password dialog."
+  [[ -n "$(git -C "$nixos" status --porcelain 2>/dev/null)" ]] &&
+    printf '\e[33mNote: ~/nixos has uncommitted changes; they are included.\e[0m\n'
+  printf '\e[2mpkexec nixos-rebuild switch --flake ~/nixos#hadron\e[0m\n'
+  pkexec /run/current-system/sw/bin/nixos-rebuild switch --flake "$nixos#hadron" 2>&1 | tee "$log"
+  case "${PIPESTATUS[0]}" in
+    0)
+      gen=$(readlink /nix/var/nix/profiles/system | grep -o '[0-9]\+' | head -1)
+      notify "NixOS switch ✓ generation $gen" "$(git -C "$nixos" log -1 --format='%h %s')"
+      return 0 ;;
+    126|127)
+      notify "NixOS switch cancelled" "Not authorised; nothing changed." 4000
+      return 1 ;;
+    *)
+      notify "NixOS switch ✗" "Failed: $(grep -m1 -i 'error' "$log" | cut -c1-140)" 0
+      return 1 ;;
+  esac
+}
+
+work=0
+for r in "${others[@]}"; do
+  r="${r%/}"
+  [[ "$r" == "$nixos" ]] && continue
+  has_draft "$r" || continue
+  work=1
+  if commit_repo "$r" && [[ -n "${inputs[$r]:-}" ]]; then bump_nixos "$r" "${inputs[$r]}"; fi
+done
+if has_draft "$nixos"; then work=1; commit_repo "$nixos"; fi
+
+if [[ "$(git -C "$nixos" rev-parse HEAD)" != "$start_head" ]]; then
+  echo
+  if ask "Switch to the new ~/nixos now?"; then
+    switch_nixos && { echo; ask "Push ~/nixos?" && git -C "$nixos" push; }
+  fi
+fi
+
+if (( work == 0 )); then
+  printf '\e[1mNo drafts waiting. Recent commits:\e[0m\n'
+  # repos touched in the last two weeks, most recent first; newest three commits each
+  for r in "$nixos" "${others[@]}"; do
+    r="${r%/}"; [[ -d "$r/.git" ]] || continue
+    t=$(git -C "$r" log -1 --since='2 weeks ago' --format=%ct 2>/dev/null)
+    [[ -n "$t" ]] && echo "$t $r"
+  done | sort -rn | uniq | while read -r _ r; do
+    printf '\n\e[36m%s\e[0m\n' "${r/#"$HOME"/\~}"
+    git -C "$r" log -3 --format='  %C(yellow)%h%C(reset) %<(70,trunc)%s %C(dim)(%cr)%C(reset)' --color=always
+  done
+  echo
+  if ask "Switch to ~/nixos as it is?"; then switch_nixos; fi
+fi
+printf '\n\e[2mDone. Press any key to close.\e[0m'
+read -rsn1 _
