@@ -396,6 +396,25 @@ ShellRoot {
         onLoadFailed: root.privacy = null
     }
 
+    // Software kill (Super+F7, privacy-toggle in ~/nixos/privacy.nix): this flag
+    // exists while the built-in mic and camera are switched off in software.
+    // The toggle script tells the bar to re-read it.
+    property bool softPrivacy: false
+
+    FileView {
+        id: softPrivacyFile
+        path: "/var/lib/camera-off/enabled"
+        blockLoading: true
+        printErrors: false
+        onLoaded: root.softPrivacy = true
+        onLoadFailed: root.softPrivacy = false
+    }
+
+    IpcHandler {
+        target: "privacy"
+        function refresh(): void { softPrivacyFile.reload(); }
+    }
+
     // The watch can't see a file that doesn't exist yet, so until the service
     // has written one, look again every 10 s. Stops once there is data.
     Timer {
@@ -1636,7 +1655,9 @@ ShellRoot {
                 }
               }
 
-              // ---- Privacy switches: mic and camera, red and struck through when switched off ----
+              // ---- Privacy: mic and camera. Green = live; orange and struck through = off in
+              // software (Super+F7); black and struck through = mic's hardware switch off.
+              // The camera's hardware switch can't be read; a white dot means it is streaming.
               Row {
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 7
@@ -1648,8 +1669,8 @@ ShellRoot {
                   anchors.verticalCenter: parent.verticalCenter
                   width: 12
                   height: 16
-                  property bool off: root.privacy !== null && !root.privacy.mic
-                  property color ink: off ? "black" : root.c.green
+                  property bool off: root.softPrivacy || (root.privacy !== null && !root.privacy.mic)
+                  property color ink: root.softPrivacy ? root.c.orange : off ? "black" : root.c.green
 
                   Rectangle { x: 3; y: 0; width: 6; height: 10; radius: 3; color: micIcon.ink }
                   Rectangle { x: 5; y: 10; width: 2; height: 4; color: micIcon.ink }
@@ -1658,7 +1679,7 @@ ShellRoot {
                     visible: micIcon.off
                     anchors.centerIn: parent
                     width: 3; height: 20; rotation: 45
-                    color: "black"
+                    color: micIcon.ink
                     border.color: root.c.bg
                     border.width: 1
                   }
@@ -1670,8 +1691,8 @@ ShellRoot {
                   anchors.verticalCenter: parent.verticalCenter
                   width: 16
                   height: 13
-                  property bool off: root.privacy !== null && !root.privacy.cam
-                  property color ink: off ? "black" : root.c.green
+                  property bool off: root.softPrivacy
+                  property color ink: off ? root.c.orange : root.c.green
 
                   Rectangle { x: 5; y: 0; width: 6; height: 3; radius: 1; color: camIcon.ink }
                   Rectangle {
@@ -1683,9 +1704,14 @@ ShellRoot {
                     visible: camIcon.off
                     anchors.centerIn: parent
                     width: 3; height: 20; rotation: 45
-                    color: "black"
+                    color: camIcon.ink
                     border.color: root.c.bg
                     border.width: 1
+                  }
+                  Rectangle {
+                    visible: root.privacy !== null && root.privacy.cam
+                    x: 13; y: -2; width: 5; height: 5; radius: 2.5
+                    color: "white"
                   }
                 }
               }

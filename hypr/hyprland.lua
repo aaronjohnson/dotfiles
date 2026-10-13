@@ -279,6 +279,8 @@ local closeWindowBind = hl.bind(mainMod .. " + C", hl.dsp.window.close())
 hl.bind(mainMod .. " + M", hl.dsp.exec_cmd("command -v hyprshutdown >/dev/null 2>&1 && hyprshutdown || hyprctl dispatch 'hl.dsp.exit()'"))
 hl.bind(mainMod .. " + E", hl.dsp.exec_cmd(fileManager))
 hl.bind(mainMod .. " + B", hl.dsp.exec_cmd("epiphany"))
+-- Super+F7: software privacy, built-in mic and camera off/on together (privacy-toggle in ~/nixos).
+hl.bind(mainMod .. " + F7", hl.dsp.exec_cmd("privacy-toggle"))
 -- Super+T: top bar autohide on/off (always visible, reserving its space, when off).
 hl.bind(mainMod .. " + T", hl.dsp.exec_cmd("qs ipc call bar toggleAutoHide"))
 hl.bind(mainMod .. " + L", hl.dsp.exec_cmd("loginctl lock-session"))  -- lock screen (hypridle runs hyprlock)
