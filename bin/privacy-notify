@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# privacy-notify: a notification whenever the microphone privacy switch moves.
+# Reads /run/privacy-switches/state ("<mic> <camera>"), which the privacy-switches
+# service (~/nixos/privacy.nix) rewrites only when the EC reports a change.
+# Only the mic is announced: the EC's camera value means "streaming now", and
+# the camera switch itself isn't visible to software.
+# Started by Hyprland at login.
+
+state=/run/privacy-switches/state
+prev=$(cut -d' ' -f1 "$state" 2>/dev/null)
+
+while :; do
+  sleep 2
+  mic=$(cut -d' ' -f1 "$state" 2>/dev/null)
+  [ -n "$mic" ] && [ -n "$prev" ] && [ "$mic" != "$prev" ] || { prev=${mic:-$prev}; continue; }
+  if [ "$mic" = on ]; then
+    notify-send -a privacy -t 4000 "🎤 Microphone on" "$(date +%H:%M) · privacy switch flipped on"
+  else
+    notify-send -a privacy -t 4000 "🎤 Microphone off" "$(date +%H:%M) · privacy switch flipped off"
+  fi
+  prev=$mic
+done

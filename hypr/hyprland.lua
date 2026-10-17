@@ -65,6 +65,7 @@ local menu        = os.getenv("HOME") .. "/.config/tofi/launch.sh"  -- tofi, Sol
 hl.on("hyprland.start", function ()
   hl.exec_cmd("quickshell")  -- top bar, loads ~/.config/quickshell/shell.qml
   hl.exec_cmd("~/dotfiles/bin/auto-brightness")  -- screen follows the light sensor (Super+F8 toggles)
+  hl.exec_cmd("~/dotfiles/bin/privacy-notify")   -- notify when the mic privacy switch moves
 end)
 
 
@@ -292,6 +293,9 @@ local function clip(key)
 end
 hl.bind("ALT + C", clip("C"))
 hl.bind("ALT + V", clip("V"))
+
+-- Super+F1: Claude Code in a new terminal.
+hl.bind(mainMod .. " + F1", hl.dsp.exec_cmd(terminal .. " --title Claude claude"))
 
 -- Super+F12: land changes: commit the drafted messages, push and bump ~/nixos, switch
 -- (password through polkit), in a small floating window, with mako notifications.
