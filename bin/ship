@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# ship: deploy what changed, asking first. Super+F11 in Hyprland (Super+F12 is `land`, for commits).
+#
+# A repo can ship if it has a .ship file, one target per line:
+#     name | command (run from the repo root) | paths it deploys (space-separated)
+# For each target ship lists the files that changed since that target last shipped, shows the
+# note in .git/DEPLOY_DRAFT if Claude left one, and deploys on yes. What went out is recorded in
+# .git/ship/<name>.manifest (path + sha256 per file), so the next run can say exactly what's new.
+# Targets are any command: Firebase deploys, a mobile app store upload (e.g. fastlane), rsync...
+# Runs are logged to <repo>/ops/logs/ when that exists (else $XDG_STATE_HOME/ship/).
+set -u
+notify() {
+  if command -v notify-send >/dev/null; then notify-send -a ship -t "${3:-6000}" "$1" "$(date +%H:%M) · $2"; fi
+}
+ask() { local ans; read -rp "$1 [y/N] " ans; [[ "$ans" == [yY]* ]]; }
+pause() { read -rp "Press Enter to close." _; }
+
+# path + sha256 of every file under the target's paths (git-ignored files too: hosting ships them)
+manifest() { (cd "$1" && find $2 -type f ! -name '.*' -print0 2>/dev/null | sort -z | xargs -0r sha256sum | awk '{print $2, $1}'); }
+
+ship_target() {
+  local repo="$1" name="$2" cmd="$3" paths="$4" rname="${1/#"$HOME"/\~}"
+  local saved="$repo/.git/ship/$name.manifest" now changes n
+  now=$(manifest "$repo" "$paths")
+  if [[ -f "$saved" ]]; then
+    changes=$(diff <(cat "$saved") <(printf '%s\n' "$now") | awk '
+      /^< / { old[$2] = 1 } /^> / { new[$2] = 1 }
+      END { for (f in new) print (f in old ? "  changed " : "  added   ") f
+            for (f in old) if (!(f in new)) print "  removed " f }' | sort -k2)
+  else
+    changes="  (first ship with this tool: everything under $paths)"
+  fi
+  printf '\n\e[1m== %s: %s ==\e[0m  \e[2m%s\e[0m\n' "$rname" "$name" "$cmd"
+  if [[ -z "$changes" ]]; then echo "  up to date"; return 1; fi
+  n=$(printf '%s\n' "$changes" | wc -l)
+  printf '%s\n' "$changes" | head -25; (( n > 25 )) && echo "  ... and $((n - 25)) more"
+  ask "Ship $name from $rname?" || return 1
+  local logdir="$repo/ops/logs"; [[ -d "$logdir" ]] || logdir="${XDG_STATE_HOME:-$HOME/.local/state}/ship"
+  mkdir -p "$logdir" "$repo/.git/ship"
+  local log="$logdir/$(date -u +%Y%m%dT%H%M%SZ)-ship-$name.log"
+  { echo "# $(date -Is) ship $name: $cmd"; printf '%s\n' "$changes"; } > "$log"
+  if (cd "$repo" && bash -c "$cmd") 2>&1 | tee -a "$log"; [[ ${PIPESTATUS[0]} == 0 ]]; then
+    printf '%s\n' "$now" > "$saved"
+    notify "Shipped $name ✓" "$rname: $n file(s)"
+    return 0
+  fi
+  notify "Ship failed: $name ✗" "$rname: see $log" 0
+  return 1
+}
+
+shipped=0 found=0
+for repo in "$HOME"/src/*/ "$HOME"/dotfiles/ "$HOME"/nixos-intel-npu/; do
+  repo="${repo%/}"; [[ -f "$repo/.ship" ]] || continue
+  found=1
+  if [[ -f "$repo/.git/DEPLOY_DRAFT" ]]; then
+    printf '\n\e[1m%s: note\e[0m\n' "${repo/#"$HOME"/\~}"
+    sed 's/^/\x1b[36m│\x1b[0m /' "$repo/.git/DEPLOY_DRAFT"
+  fi
+  any=0
+  while IFS='|' read -r -u 3 name cmd paths; do   # fd 3, so the y/N questions still read the keyboard
+    name=$(echo $name); [[ -z "$name" || "$name" == \#* ]] && continue
+    ship_target "$repo" "$name" "$(echo $cmd)" "$(echo $paths)" && { shipped=1; any=1; }
+  done 3< "$repo/.ship"
+  (( any )) && rm -f "$repo/.git/DEPLOY_DRAFT"
+done
+(( found )) || echo "No repo has a .ship file."
+echo; (( shipped )) && echo "Done." || echo "Nothing shipped."
+pause

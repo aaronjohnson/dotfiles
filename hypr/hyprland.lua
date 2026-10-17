@@ -300,6 +300,8 @@ hl.bind(mainMod .. " + F1", hl.dsp.exec_cmd(terminal .. " --title Claude claude"
 -- Super+F12: land changes: commit the drafted messages, push and bump ~/nixos, switch
 -- (password through polkit), in a small floating window, with mako notifications.
 hl.bind(mainMod .. " + F12", hl.dsp.exec_cmd("kitty --class land --title 'Land' -e ~/dotfiles/bin/land"))
+-- Super+F11: ship: deploy what changed since the last ship, per repo .ship file, asking first
+hl.bind(mainMod .. " + F11", hl.dsp.exec_cmd("kitty --class land --title 'Ship' -e ~/dotfiles/bin/ship"))
 
 -- Super+F9: screenshot of the screen; +Shift: drag a region; +Alt: the focused window.
 -- Saved to ~/Pictures/Screenshots and copied to the clipboard (hyprshot notifies).
