@@ -8,6 +8,7 @@
 #      ~/nixos's lock at the new commit, build, and draft the ~/nixos commit;
 #   3. commit ~/nixos, switch to it (password through polkit: pkexec), then push it.
 # With no drafts waiting it shows the recent commits and offers to switch to ~/nixos as it is.
+# LAND_EMBED=1 (how `ship` runs it first): only the drafts; no recent-commits view, no closing key.
 set -u
 notify() {
   set -- "$1" "$(date +%H:%M) · $2" "${3:-6000}"   # timestamp every notification
@@ -151,6 +152,7 @@ if [[ "$(git -C "$nixos" rev-parse HEAD)" != "$start_head" ]]; then
   fi
 fi
 
+if [[ -n "${LAND_EMBED:-}" ]]; then exit 0; fi
 if (( work == 0 )); then
   printf '\e[1mNo drafts waiting. Recent commits:\e[0m\n'
   # repos touched in the last two weeks, most recent first; newest three commits each

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# ship: deploy what changed, asking first. Super+F11 in Hyprland (Super+F12 is `land`, for commits).
+# ship: commit, then deploy what changed, asking first. Super+F11 in Hyprland.
+# It runs `land` first (Super+F12 alone: commits and NixOS switches without deploying), so what ships
+# matches a commit; after shipping it offers to commit the changelog entry the same way.
 #
 # A repo can ship if it has a .ship file, one target per line:
 #     name | command (run from the repo root) | paths it deploys (space-separated)
@@ -7,6 +9,12 @@
 # note in .git/DEPLOY_DRAFT if Claude left one, and deploys on yes. What went out is recorded in
 # .git/ship/<name>.manifest (path + sha256 per file), so the next run can say exactly what's new.
 # Targets are any command: Firebase deploys, a mobile app store upload (e.g. fastlane), rsync...
+# Optional settings lines in .ship:
+#     @changelog CHANGELOG.md      after a ship, add a dated entry (the DEPLOY_DRAFT note + what went out)
+#                                  at the top, stage it, and add it to the repo's commit draft for `land`
+#     @email someone@example.com   then offer to email that entry: opens a filled-in Gmail compose
+#                                  window in the browser, so you read it and press Send yourself
+#     @from you@example.com        which signed-in Gmail account the compose window opens in
 # Runs are logged to <repo>/ops/logs/ when that exists (else $XDG_STATE_HOME/ship/).
 set -u
 notify() {
@@ -33,6 +41,7 @@ ship_target() {
   printf '\n\e[1m== %s: %s ==\e[0m  \e[2m%s\e[0m\n' "$rname" "$name" "$cmd"
   if [[ -z "$changes" ]]; then echo "  up to date"; return 1; fi
   n=$(printf '%s\n' "$changes" | wc -l)
+  [[ -f "$saved" ]] || n=$(printf '%s\n' "$now" | grep -c .)   # first ship: count every file
   printf '%s\n' "$changes" | head -25; (( n > 25 )) && echo "  ... and $((n - 25)) more"
   ask "Ship $name from $rname?" || return 1
   local logdir="$repo/ops/logs"; [[ -d "$logdir" ]] || logdir="${XDG_STATE_HOME:-$HOME/.local/state}/ship"
@@ -40,13 +49,51 @@ ship_target() {
   local log="$logdir/$(date -u +%Y%m%dT%H%M%SZ)-ship-$name.log"
   { echo "# $(date -Is) ship $name: $cmd"; printf '%s\n' "$changes"; } > "$log"
   if (cd "$repo" && bash -c "$cmd") 2>&1 | tee -a "$log"; [[ ${PIPESTATUS[0]} == 0 ]]; then
-    printf '%s\n' "$now" > "$saved"
+    manifest "$repo" "$paths" > "$saved"   # after the command: it may build files (e.g. about.html)
     notify "Shipped $name ✓" "$rname: $n file(s)"
+    went+=("$name ($n file$( ((n == 1)) || echo s))")
     return 0
   fi
   notify "Ship failed: $name ✗" "$rname: see $log" 0
   return 1
 }
+
+# settings line from .ship: setting <file> <key>
+setting() { awk -v k="@$2" '$1 == k { $1 = ""; sub(/^ /, ""); print; exit }' "$1/.ship"; }
+
+# After a repo ships: changelog entry, staged for land; then offer the email.
+changelog() {
+  local repo="$1" file to entry when title
+  file=$(setting "$repo" changelog); [[ -n "$file" ]] || return 0
+  when=$(date '+%Y-%m-%d %H:%M')
+  title=$(head -1 "$repo/.git/DEPLOY_DRAFT" 2>/dev/null)
+  entry=$(printf '## %s · %s\n\n' "$when" "$(IFS=,; echo "${went[*]}" | sed 's/,/, /g')"
+          if [[ -f "$repo/.git/DEPLOY_DRAFT" ]]; then cat "$repo/.git/DEPLOY_DRAFT"; else echo "(no note)"; fi)
+  local path="$repo/$file"
+  { echo "# Changelog"; echo; echo "$entry"; echo; [[ -f "$path" ]] && sed '1{/^# Changelog$/d}; 2{/^$/d}' "$path"; } > "$path.new"
+  mv "$path.new" "$path"
+  git -C "$repo" add -- "$file"
+  if [[ -f "$repo/.git/COMMIT_DRAFT" ]]; then
+    printf '\nAlso: %s entry for the %s ship.\n' "$file" "$when" >> "$repo/.git/COMMIT_DRAFT"
+  else
+    printf '%s: ship %s\n\n%s\n' "$file" "$when" "${title:-Shipped ${went[*]}.}" > "$repo/.git/COMMIT_DRAFT"
+  fi
+  echo "Added the entry to $file (staged; commit with Super+F12)."
+  to=$(setting "$repo" email); [[ -n "$to" ]] || return 0
+  ask "Email this entry to $to?" || return 0
+  local url
+  url=$(python3 -c 'import sys, urllib.parse as u; to, su, body, who = sys.argv[1:]
+print("https://mail.google.com/mail/?view=cm&fs=1&" + u.urlencode({"to": to, "su": su, "body": body, "authuser": who}))' \
+        "$to" "$(basename "$repo") shipped $when${title:+: $title}" "$entry" "$(setting "$repo" from)")
+  xdg-open "$url" >/dev/null 2>&1 & disown
+  echo "Opened the email in the browser: read it, then Send."
+}
+
+drafts() { compgen -G "$HOME/src/*/.git/COMMIT_DRAFT" >/dev/null || compgen -G "$HOME/dotfiles/.git/COMMIT_DRAFT" >/dev/null ||
+           compgen -G "$HOME/nixos/.git/COMMIT_DRAFT" >/dev/null || compgen -G "$HOME/nixos-intel-npu/.git/COMMIT_DRAFT" >/dev/null; }
+if drafts; then
+  printf '\e[1mCommit drafts first (land):\e[0m\n'; LAND_EMBED=1 "$HOME/dotfiles/bin/land"
+fi
 
 shipped=0 found=0
 for repo in "$HOME"/src/*/ "$HOME"/dotfiles/ "$HOME"/nixos-intel-npu/; do
@@ -56,13 +103,15 @@ for repo in "$HOME"/src/*/ "$HOME"/dotfiles/ "$HOME"/nixos-intel-npu/; do
     printf '\n\e[1m%s: note\e[0m\n' "${repo/#"$HOME"/\~}"
     sed 's/^/\x1b[36m│\x1b[0m /' "$repo/.git/DEPLOY_DRAFT"
   fi
-  any=0
+  any=0 went=()
   while IFS='|' read -r -u 3 name cmd paths; do   # fd 3, so the y/N questions still read the keyboard
-    name=$(echo $name); [[ -z "$name" || "$name" == \#* ]] && continue
+    name=$(echo $name); [[ -z "$name" || "$name" == \#* || "$name" == @* ]] && continue
     ship_target "$repo" "$name" "$(echo $cmd)" "$(echo $paths)" && { shipped=1; any=1; }
   done 3< "$repo/.ship"
+  (( any )) && changelog "$repo"
   (( any )) && rm -f "$repo/.git/DEPLOY_DRAFT"
 done
 (( found )) || echo "No repo has a .ship file."
 echo; (( shipped )) && echo "Done." || echo "Nothing shipped."
+if (( shipped )) && drafts && ask "Commit the changelog entries now?"; then LAND_EMBED=1 "$HOME/dotfiles/bin/land"; fi
 pause
