@@ -48,14 +48,29 @@ ship_target() {
   mkdir -p "$logdir" "$repo/.git/ship"
   local log="$logdir/$(date -u +%Y%m%dT%H%M%SZ)-ship-$name.log"
   { echo "# $(date -Is) ship $name: $cmd"; printf '%s\n' "$changes"; } > "$log"
-  if (cd "$repo" && bash -c "$cmd") 2>&1 | tee -a "$log"; [[ ${PIPESTATUS[0]} == 0 ]]; then
-    manifest "$repo" "$paths" > "$saved"   # after the command: it may build files (e.g. about.html)
-    notify "Shipped $name ✓" "$rname: $n file(s)"
-    went+=("$name ($n file$( ((n == 1)) || echo s))")
-    return 0
-  fi
+  local try fix
+  for try in 1 2; do
+    if (cd "$repo" && bash -c "$cmd") 2>&1 | tee -a "$log"; [[ ${PIPESTATUS[0]} == 0 ]]; then
+      manifest "$repo" "$paths" > "$saved"   # after the command: it may build files (e.g. about.html)
+      notify "Shipped $name ✓" "$rname: $n file(s)"
+      went+=("$name ($n file$( ((n == 1)) || echo s))")
+      return 0
+    fi
+    (( try == 1 )) && fix=$(reauth_fix "$log") || break
+    printf '\n\e[1m%s needs a fresh login.\e[0m\n' "$name"
+    ask "Run \`$fix\` here (opens the browser), then retry?" || break
+    echo "# $(date -Is) reauth: $fix, then retry" >> "$log"
+    (cd "$repo" && bash -c "$fix") || break   # interactive, so not piped through tee
+  done
   notify "Ship failed: $name ✗" "$rname: see $log" 0
   return 1
+}
+
+# A failed run whose log says the login expired: print the command that logs in again (else fail).
+# Firebase CLI tokens lapse after a while idle (first seen 2026-10-18).
+reauth_fix() {
+  if grep -q 'firebase login --reauth' "$1"; then echo "npx -y firebase-tools@latest login --reauth"
+  else return 1; fi
 }
 
 # settings line from .ship: setting <file> <key>
