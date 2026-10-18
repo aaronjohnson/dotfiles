@@ -4,7 +4,7 @@
 # Every outward step asks first:
 #   1. commit each repo with a drafted message waiting in .git/COMMIT_DRAFT (written by
 #      Claude), after showing the staged changes; ~/nixos last;
-#   2. for a repo ~/nixos takes as a flake input (jantar, nixos-intel-npu): push it, point
+#   2. for a repo ~/nixos takes as a flake input (jantar, nixos-intel-npu, misra): push it, point
 #      ~/nixos's lock at the new commit, build, and draft the ~/nixos commit;
 #   3. commit ~/nixos, switch to it (password through polkit: pkexec), then push it.
 # With no drafts waiting it shows the recent commits and offers to switch to ~/nixos as it is.
@@ -21,7 +21,7 @@ pause() { read -rp "Press Enter to continue." _; }
 
 nixos="$HOME/nixos"
 # Repos ~/nixos takes as flake inputs: path -> input name.
-declare -A inputs=(["$HOME/src/jantar"]=jantar ["$HOME/nixos-intel-npu"]=nixos-intel-npu)
+declare -A inputs=(["$HOME/src/jantar"]=jantar ["$HOME/nixos-intel-npu"]=nixos-intel-npu ["$HOME/src/misra"]=misra)
 others=("$HOME/dotfiles" "$HOME/nixos-intel-npu" "$HOME"/src/*/)
 start_head=$(git -C "$nixos" rev-parse HEAD 2>/dev/null)
 

@@ -125,6 +125,37 @@ ShellRoot {
     property real batMinutesLeft: -1     // to empty when discharging, to full when charging
     property real batWatts: 0            // power into (+) or out of (-) the battery
     property real chargerWatts: 0        // what the USB-C charger agreed to supply; 0 = none
+    // batPercent -2: nothing trustworthy knows the charge level (shown as "?").
+
+    // misra (~/src/misra) cross-checks the firmware, USB-C and EC power reports.
+    // While it says one of them is lying, show its verdict instead of sysfs:
+    // the firmware once dropped the battery after a resume and the bar showed
+    // 0 % and a 100 W charger for an hour. powerNote says what we're showing.
+    property bool powerDegraded: false
+    property string powerNote: ""
+    FileView { id: misraState; blockLoading: true; path: "/run/misra/state.json" }
+
+    function applyMisra() {
+        misraState.reload();
+        var st;
+        try { st = JSON.parse(misraState.text()); } catch (e) { st = null; }
+        // Only a recent verdict counts (misra checks every 30 s).
+        if (!st || !st.power || Date.now() / 1000 - st.time > 120 || st.power.ok) {
+            root.powerDegraded = false;
+            root.powerNote = "";
+            return;
+        }
+        var p = st.power;
+        root.powerDegraded = true;
+        root.batPercent = p.pct !== null ? p.pct : -2;
+        root.batStatus = { charging: "Charging", discharging: "Discharging", idle: "Not charging" }[p.flow] || "";
+        root.batWatts = p.battery_w !== null ? p.battery_w : 0;
+        root.chargerWatts = p.charger_w !== null ? p.charger_w : 0;
+        root.batMinutesLeft = -1;
+        var short = { acpi_bat: "firmware battery", acpi_ac: "firmware charger", ucsi: "USB-C", ec: "EC", trend: "trend" };
+        root.powerNote = "not trusting: " + p.faulty.map(function (x) { return short[x] || x; }).join(", ")
+                         + (p.source ? "\nshowing: " + p.source : "\ncharge level unknown");
+    }
 
     FileView { id: batCapacity; blockLoading: true; path: root.batDir + "capacity" }
     FileView { id: batStatusFile; blockLoading: true; path: root.batDir + "status" }
@@ -165,7 +196,8 @@ ShellRoot {
     function readBattery() {
         var files = [batCapacity, batStatusFile, batChargeNow, batChargeFull, batCurrent, batVoltage];
         for (var i = 0; i < files.length; i++) files[i].reload();
-        root.batPercent = parseInt(batCapacity.text());
+        var pct = parseInt(batCapacity.text());
+        root.batPercent = isNaN(pct) ? -2 : pct;     // missing file: unknown, not 0 %
         root.batStatus = batStatusFile.text().trim();
         var now = Number(batChargeNow.text()), full = Number(batChargeFull.text());
         var current = Number(batCurrent.text());
@@ -177,6 +209,7 @@ ShellRoot {
             root.batMinutesLeft = -1;
         root.batWatts = powerFrom(current);
         root.readCharger();
+        root.applyMisra();
     }
 
     // Power into (+) or out of (-) the battery, from the files already reloaded.
@@ -187,6 +220,7 @@ ShellRoot {
 
     // Just the power, for the 2 s history: three small sysfs reads.
     function readPower() {
+        if (root.powerDegraded) return;              // sysfs is what's wrong; keep misra's numbers
         batCurrent.reload();
         batVoltage.reload();
         batStatusFile.reload();
@@ -1515,9 +1549,10 @@ ShellRoot {
                 id: batWidget
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 6
-                visible: root.batPercent >= 0
+                visible: root.batPercent >= 0 || root.batPercent === -2
                 property bool charging: root.batStatus === "Charging"
-                property color tint: charging ? root.c.green
+                property color tint: root.batPercent === -2 ? root.c.dim
+                                     : charging ? root.c.green
                                      : root.batPercent < 15 ? root.c.red
                                      : root.batPercent < 30 ? root.c.orange : root.c.yellow
 
@@ -1535,7 +1570,7 @@ ShellRoot {
                       x: 2.5
                       y: 2.5
                       height: parent.height - 5
-                      width: Math.max(1, (parent.width - 5) * root.batPercent / 100)
+                      width: Math.max(1, (parent.width - 5) * Math.max(0, root.batPercent) / 100)
                       radius: 1
                       color: batWidget.tint
                     }
@@ -1558,7 +1593,7 @@ ShellRoot {
 
                 Text {
                   anchors.verticalCenter: parent.verticalCenter
-                  text: root.batPercent + "%"
+                  text: (root.batPercent === -2 ? "?" : root.batPercent + "%")
                         + (root.batMinutesLeft > 0
                            ? (batWidget.charging ? "  full in " : "  ") + root.formatMinutes(root.batMinutesLeft)
                            : "")
@@ -1580,6 +1615,15 @@ ShellRoot {
                   color: root.batWatts > 0 ? root.c.green : root.c.dim
                   font.pixelSize: 12
                   font.family: "monospace"
+                }
+
+                // misra says a power sensor is lying: the numbers are its verdict.
+                Text {
+                  anchors.verticalCenter: parent.verticalCenter
+                  visible: root.powerDegraded
+                  text: "⚠"
+                  color: root.c.orange
+                  font.pixelSize: 13
                 }
               }
 
@@ -2479,11 +2523,11 @@ ShellRoot {
 
                       // -- Battery: power in (charging: outward / up, green) or
                       // out (draining: inward / down, orange) --
-                      StatTitle { text: "BATTERY"; color: root.c.green; visible: root.batPercent >= 0 }
+                      StatTitle { text: "BATTERY"; color: root.c.green; visible: root.batPercent >= 0 || root.batPercent === -2 }
                       Flow {
                         width: parent.width
                         spacing: 14
-                        visible: root.batPercent >= 0
+                        visible: root.batPercent >= 0 || root.batPercent === -2
                         TimeGraph {
                           key: "power"
                           width: polar ? statsPopup.dialWidth : parent.width
@@ -2504,7 +2548,7 @@ ShellRoot {
                         }
                         StatText {
                           color: root.c.fg
-                          text: root.batPercent + "%  " + root.batStatus.toLowerCase()
+                          text: (root.batPercent === -2 ? "?" : root.batPercent + "%") + "  " + root.batStatus.toLowerCase()
                                 + (root.batMinutesLeft > 0
                                    ? (root.batStatus === "Charging" ? "\nfull in " : "\n") + root.formatMinutes(root.batMinutesLeft)
                                      + (root.batStatus === "Charging" ? "" : " left")
@@ -2512,6 +2556,7 @@ ShellRoot {
                                 + "\n" + (root.batWatts > 0 ? "charging " : root.batWatts < 0 ? "draining " : "")
                                 + statsPopup.signedWatts(root.batWatts)
                                 + (root.chargerWatts > 0 ? "\ncharger " + Math.round(root.chargerWatts) + " W" : "")
+                                + (root.powerDegraded ? "\n⚠ misra " + root.powerNote : "")
                         }
                         StatText {
                           text: "charging: green, outward / up\ndraining: orange, inward / down · 10 W dotted"

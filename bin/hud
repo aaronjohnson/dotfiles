@@ -22,6 +22,7 @@ Standard library only.
 import argparse
 import curses
 import glob
+import json
 import locale
 import math
 import os
@@ -85,6 +86,8 @@ class Hist:
 CI_UNIT = "github-runner-nixos-intel-npu.service"
 CI_CGROUP = "/sys/fs/cgroup/system.slice/" + CI_UNIT + "/"
 CI_UNIT_FILE = "/etc/systemd/system/" + CI_UNIT
+MISRA_STATE = os.environ.get("MISRA_STATE_FILE", "/run/misra/state.json")  # misra's power verdict
+SHORT = {"acpi_bat": "fw bat", "acpi_ac": "fw ac", "ucsi": "usb-c", "ec": "ec", "trend": "trend"}
 CI_STATUS = "/run/github-runner/nixos-intel-npu/ci-status/"
 NPU_DIR = "/sys/class/accel/accel0/device/"
 WIFI_CMD = ("nmcli -t -f IN-USE,SIGNAL,SSID device wifi list --rescan no; echo @@IW; "
@@ -118,7 +121,8 @@ class Sampler:
         self.npu = dict(load=None, awake=False, mhz=0, max=0, mem=None)
         self.gpu = [dict(name=rd(g + "/gtidle/name") or os.path.basename(g), busy=None, mhz=0,
                          max=num(g + "/freq0/max_freq") or 0) for g in self.gts]
-        self.bat = dict(pct=None, status="", watts=0.0, mins=None, charger=0.0)
+        self.bat = dict(pct=None, status="", watts=0.0, mins=None, charger=0.0,
+                        degraded=False, note="")
         self.ci = dict(installed=False, active=False, failed=False, job=None, step="",
                        pkg="", done=0, total=0, eta=None, readable=True)
         self.ci_rate = []
@@ -298,8 +302,9 @@ class Sampler:
         if self.freqs:
             self.clock = sum(self.freqs) / len(self.freqs) / 1000  # GHz
             self.H["clock"].push(self.clock)
-        if self.bat_dir:
-            self.read_power()
+        if self.bat_dir or self.bat["degraded"]:
+            if not self.bat["degraded"]:
+                self.read_power()
             self.H["power"].push(self.bat["watts"])
         if self.fan_path:
             r = num(self.fan_path)
@@ -316,8 +321,36 @@ class Sampler:
         return cur
 
     def read_battery(self):
-        if not self.bat_dir:
+        if self.bat_dir:
+            self.read_battery_sysfs()
+        self.apply_misra()
+
+    def apply_misra(self):
+        """misra (~/src/misra) cross-checks the firmware, USB-C and EC power
+        reports. While it says one of them is lying, show its verdict instead
+        of sysfs (a resume once left the firmware reporting no battery and a
+        100 W charger while running on battery)."""
+        b = self.bat
+        try:
+            with open(MISRA_STATE) as f:
+                st = json.load(f)
+            p = st["power"]
+            fresh = time.time() - st["time"] <= 120
+        except (OSError, ValueError, KeyError, TypeError):
+            p, fresh = None, False
+        if not fresh or p.get("ok"):
+            b["degraded"], b["note"] = False, ""
             return
+        b["degraded"] = True
+        b["pct"] = p.get("pct")
+        b["status"] = {"charging": "Charging", "discharging": "Discharging",
+                       "idle": "Not charging"}.get(p.get("flow"), "")
+        b["watts"] = p.get("battery_w") or 0.0
+        b["charger"] = p.get("charger_w") or 0.0
+        b["mins"] = None
+        b["note"] = "⚠ " + ", ".join(SHORT.get(x, x) for x in p.get("faulty", []))
+
+    def read_battery_sysfs(self):
         d, b = self.bat_dir, self.bat
         cap = num(d + "capacity")
         b["pct"] = int(cap) if cap is not None else None
@@ -846,7 +879,7 @@ def panels(s, G):
                                  centre=[(temp_text(s.temp, G), "red")],
                                  info=[("30m max " + temp_text(m, G) if m else "", "fg"),
                                        ("guides 50, 90", "muted")])))
-    if s.bat_dir:
+    if s.bat_dir or s.bat["degraded"]:
         b = s.bat
         state = (b["status"] or "").lower()
         if b["mins"]:
@@ -854,8 +887,9 @@ def panels(s, G):
         out.append(("dial", Dial("POWER", "green", [(H["power"], 1, "green", "orange")], period=600,
                                  log=(0, 2), mirrored=True, guides=(10,),
                                  centre=[(signed_watts(b["watts"], G), "green" if b["watts"] >= 0 else "orange"),
-                                         ("%d%%" % b["pct"] if b["pct"] is not None else "", "fg", 0)],
+                                         (pct_text(b), "fg", 0)],
                                  info=[(state, "fg"),
+                                       (b["note"], "orange"),
                                        ("charger %d W" % round(b["charger"]) if b["charger"] > 0 else "no charger",
                                         "muted")])))
     out.append(("dial", Dial("NET", "blue", [(H["rx"], 1, "blue", "orange"), (H["tx"], -1, "blue", "orange")],
@@ -948,6 +982,13 @@ def layout(W, Hh, count):
     return h, 1, 16, max(1, W // 16), max(1, Hh // (h + 2))
 
 
+def pct_text(b):
+    """Charge level; "?" when misra says nothing trustworthy knows it, and a
+    warning mark while the numbers are misra's verdict rather than sysfs."""
+    t = "%d%%" % b["pct"] if b["pct"] is not None else ("?" if b["degraded"] else "")
+    return t + (" ⚠" if b["degraded"] else "")
+
+
 def render(s, W, H, mode):
     G = GLYPHS[mode]
     buf = Buf(W, H)
@@ -955,8 +996,9 @@ def render(s, W, H, mode):
     b = s.bat
     head = [("hud", "cyan", BOLD), (" " + socket.gethostname(), "muted", 0),
             ("  " + time.strftime("%H:%M:%S"), "fg", 0)]
-    if b["pct"] is not None:
-        head.append(("  bat %d%% %s" % (b["pct"], signed_watts(b["watts"], G)), "green", 0))
+    if b["pct"] is not None or b["degraded"]:
+        head.append(("  bat %s %s" % (pct_text(b), signed_watts(b["watts"], G)),
+                     "orange" if b["degraded"] else "green", 0))
     if s.wifi["ssid"]:
         head.append(("  " + s.wifi["ssid"], "cyan", 0))
     x = 0
@@ -1208,8 +1250,9 @@ class FbRenderer:
         u, b = self.u, s.bat
         parts = [("hud", "cyan", True), ("  " + socket.gethostname(), "muted", False),
                  ("  " + time.strftime("%H:%M:%S"), "fg", False)]
-        if b["pct"] is not None:
-            parts.append(("   battery %d%%  %s" % (b["pct"], signed_watts(b["watts"], G)), "green", False))
+        if b["pct"] is not None or b["degraded"]:
+            parts.append(("   battery %s  %s" % (pct_text(b), signed_watts(b["watts"], G)),
+                          "orange" if b["degraded"] else "green", False))
         if s.wifi["ssid"]:
             parts.append(("   " + s.wifi["ssid"], "cyan", False))
         x, y = margin, int(8 * u)
