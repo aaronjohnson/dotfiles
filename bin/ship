@@ -80,6 +80,8 @@ setting() { awk -v k="@$2" '$1 == k { $1 = ""; sub(/^ /, ""); print; exit }' "$1
 changelog() {
   local repo="$1" file to entry when title
   file=$(setting "$repo" changelog); [[ -n "$file" ]] || return 0
+  # no note, no entry: the changelog is public, and the run log already records the ship
+  [[ -s "$repo/.git/DEPLOY_DRAFT" ]] || { echo "No DEPLOY_DRAFT note, so no changelog entry (the run is logged)."; return 0; }
   when=$(date '+%Y-%m-%d %H:%M')
   title=$(head -1 "$repo/.git/DEPLOY_DRAFT" 2>/dev/null)
   entry=$(printf '## %s · %s\n\n' "$when" "$(IFS=,; echo "${went[*]}" | sed 's/,/, /g')"
@@ -88,6 +90,12 @@ changelog() {
   { echo "# Changelog"; echo; echo "$entry"; echo; [[ -f "$path" ]] && sed '1{/^# Changelog$/d}; 2{/^$/d}' "$path"; } > "$path.new"
   mv "$path.new" "$path"
   git -C "$repo" add -- "$file"
+  # the entry is written after the ship, so record its new fingerprint in any manifest that covers it
+  # (otherwise the next run lists CHANGELOG.md as changed and nothing ever looks shipped)
+  local sum m; sum=$(sha256sum "$path" | cut -d' ' -f1)
+  for m in "$repo"/.git/ship/*.manifest; do
+    [[ -f "$m" ]] && grep -q "^$file " "$m" && sed -i "s|^$file .*|$file $sum|" "$m"
+  done
   if [[ -f "$repo/.git/COMMIT_DRAFT" ]]; then
     printf '\nAlso: %s entry for the %s ship.\n' "$file" "$when" >> "$repo/.git/COMMIT_DRAFT"
   else
