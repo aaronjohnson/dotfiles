@@ -49,7 +49,13 @@ Scope {
         const q = v => '"' + String(v).replace(/["\\]/g, "") + '"';
         const kind = l => ({ "Log": "login", "A": "all" })[l.split(" ")[0]] || l.split(" ")[0].toLowerCase();
         const name = p => p === "system" || p === "all" ? p : p.split("/").pop();
-        const facts = log.map((e, i) => "entry(" + i + "," + e.state + "," + kind(e.label) + "," + q(name(e.repo)) + ").").join("\n");
+        // a "X: command not found" in a failed row's output: misra says how to provide X
+        const missing = (e, i) => {
+            const m = e.state === "bad" && /([\w.+-]+): (?:command )?not found|command not found: ([\w.+-]+)/.exec(e.detail || "");
+            return m ? "\nmissing(" + i + "," + q(m[1] || m[2]) + ")." : "";
+        };
+        const facts = log.map((e, i) => "entry(" + i + "," + e.state + "," + kind(e.label) + "," + q(name(e.repo)) + ")."
+                                         + missing(e, i)).join("\n");
         concludeProc.running = false;
         concludeProc.command = ["sh", "-c", 'printf "%s\\n" "$1" > "$2" && exec misra land-log "$2"', "sh",
                                 facts, Quickshell.env("XDG_RUNTIME_DIR") + "/deck-log.lp"];
@@ -241,14 +247,14 @@ Scope {
             onRead: line => {
                 const clean = line.replace(/\x1b\[[0-9;]*m/g, "").trim();
                 if (clean) deck.busyLine = clean;
-                if (/error|fail|denied|✗/i.test(clean)) deck.busyErr = clean;
+                if (/not found/i.test(clean) || (!/not found/i.test(deck.busyErr) && /error|fail|denied|✗/i.test(clean))) deck.busyErr = clean;   // a missing command is the reason
             }
         }
         stderr: SplitParser {
             onRead: line => {
                 const clean = line.replace(/\x1b\[[0-9;]*m/g, "").trim();
                 if (clean) deck.busyLine = clean;
-                if (/error|fail|denied|✗/i.test(clean)) deck.busyErr = clean;
+                if (/not found/i.test(clean) || (!/not found/i.test(deck.busyErr) && /error|fail|denied|✗/i.test(clean))) deck.busyErr = clean;   // a missing command is the reason
             }
         }
         onExited: (code) => {
@@ -589,6 +595,9 @@ Scope {
                     readonly property var rows: deck.log.map((e, i) => {
                             const by = deck.verdict.fixed ? deck.verdict.fixed[String(i)] : undefined;
                             const blame = deck.verdict.blame ? deck.verdict.blame[String(i)] : undefined;
+                            const advice = deck.verdict.advice ? deck.verdict.advice[String(i)] : undefined;
+                            if (advice && by === undefined)
+                                return Object.assign({}, e, { detail: "→ " + advice + " · " + e.detail });
                             return by !== undefined && deck.log[by]
                                 ? Object.assign({}, e, { state: "fixed", detail: "fixed " + deck.log[by].t + " · " + e.detail })
                                 : blame ? Object.assign({}, e, { detail: "likely the " + blame + " change · " + e.detail }) : e;
