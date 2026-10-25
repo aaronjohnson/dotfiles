@@ -155,14 +155,15 @@ fi
 if [[ -n "${LAND_EMBED:-}" ]]; then exit 0; fi
 if (( work == 0 )); then
   printf '\e[1mNo drafts waiting. Recent commits:\e[0m\n'
-  # repos touched in the last two weeks, most recent first; newest three commits each
+  # repos touched in the last two weeks and their newest three commits, oldest first,
+  # so the newest commit is at the bottom, next to the prompt
   for r in "$nixos" "${others[@]}"; do
     r="${r%/}"; [[ -d "$r/.git" ]] || continue
     t=$(git -C "$r" log -1 --since='2 weeks ago' --format=%ct 2>/dev/null)
     [[ -n "$t" ]] && echo "$t $r"
-  done | sort -rn | uniq | while read -r _ r; do
+  done | sort -n | uniq | while read -r _ r; do
     printf '\n\e[36m%s\e[0m\n' "${r/#"$HOME"/\~}"
-    git -C "$r" log -3 --format='  %C(yellow)%h%C(reset) %<(70,trunc)%s %C(dim)(%cr)%C(reset)' --color=always
+    git -C "$r" log -3 --reverse --format='  %C(yellow)%h%C(reset) %<(70,trunc)%s %C(dim)(%cr)%C(reset)' --color=always
   done
   echo
   offer_switch "Switch to ~/nixos as it is?"
