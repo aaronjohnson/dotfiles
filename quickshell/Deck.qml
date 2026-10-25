@@ -37,6 +37,23 @@ Scope {
     function note(state, label, repo, detail) {
         const t = new Date().toTimeString().slice(0, 5);
         log = log.concat([{ t: t, state: state, label: label, repo: repo, detail: detail || "" }]).slice(-40);
+        conclude();
+    }
+
+    // ---- what the log adds up to: misra's rules/land (clingo) ----
+    // Each row becomes entry(N, State, Kind, Repo); `misra land-log` says which failures a
+    // later success fixed, which are open, the change most likely to blame, and a verdict.
+    // { verdict, failures, open: [N], fixed: { N: M }, blame: { N: repo } }, or {} until misra answers.
+    property var verdict: ({})
+    function conclude() {
+        const q = v => '"' + String(v).replace(/["\\]/g, "") + '"';
+        const kind = l => ({ "Log": "login", "A": "all" })[l.split(" ")[0]] || l.split(" ")[0].toLowerCase();
+        const name = p => p === "system" || p === "all" ? p : p.split("/").pop();
+        const facts = log.map((e, i) => "entry(" + i + "," + e.state + "," + kind(e.label) + "," + q(name(e.repo)) + ").").join("\n");
+        concludeProc.running = false;
+        concludeProc.command = ["sh", "-c", 'printf "%s\\n" "$1" > "$2" && exec misra land-log "$2"', "sh",
+                                facts, Quickshell.env("XDG_RUNTIME_DIR") + "/deck-log.lp"];
+        concludeProc.running = true;
     }
     // last result per repo path: { ok, label, line }
     property var results: ({})
@@ -185,6 +202,13 @@ Scope {
     }
 
     Process {
+        id: concludeProc
+        stdout: StdioCollector {
+            onStreamFinished: { try { deck.verdict = JSON.parse(this.text); } catch (e) {} }
+        }
+    }
+
+    Process {
         id: statusProc
         command: [deck.home + "/dotfiles/bin/deck-status"]
         stdout: StdioCollector {
@@ -201,7 +225,8 @@ Scope {
 
     Process {
         id: switchProc
-        command: [deck.land, "needs-switch"]
+        // LAND_YES: no mako card for the result (it piled up nine "doesn't build"); the log has it
+        command: ["env", "LAND_YES=1", deck.land, "needs-switch"]
         onExited: (code) => {
             deck.switchState = code === 0 ? "differs" : code === 1 ? "same" : "broken";
             deck.note(code === 1 ? "ok" : code === 0 ? "info" : "bad", "Check", "system",
@@ -561,7 +586,13 @@ Scope {
                     border.color: deck.auto ? deck.theme.violet : deck.theme.muted
 
                     // the log (past), then the queue: the step running or next, and the rest
-                    readonly property var rows: deck.log
+                    readonly property var rows: deck.log.map((e, i) => {
+                            const by = deck.verdict.fixed ? deck.verdict.fixed[String(i)] : undefined;
+                            const blame = deck.verdict.blame ? deck.verdict.blame[String(i)] : undefined;
+                            return by !== undefined && deck.log[by]
+                                ? Object.assign({}, e, { state: "fixed", detail: "fixed " + deck.log[by].t + " · " + e.detail })
+                                : blame ? Object.assign({}, e, { detail: "likely the " + blame + " change · " + e.detail }) : e;
+                        })
                         .concat(deck.pending.map((s, i) => ({
                             t: "", state: i === 0 ? (deck.busyRepo !== "" ? "running" : "next") : "later",
                             label: s.label, repo: s.repo,
@@ -580,9 +611,11 @@ Scope {
                                 font.pixelSize: 12; font.bold: true; font.letterSpacing: 1.5
                             }
                             Text {
-                                text: (deck.loading ? "reading repos · " : "") + (deck.switchState === "checking" ? "checking switch · " : "")
+                                text: (deck.verdict.verdict === "clear" ? (deck.verdict.failures ? "all clear: " + deck.verdict.failures + " failed, all fixed · " : "all clear · ")
+                                       : deck.verdict.verdict === "open" ? deck.verdict.open.length + " open · " : "")
+                                      + (deck.loading ? "reading repos · " : "") + (deck.switchState === "checking" ? "checking switch · " : "")
                                       + deck.pending.length + " to go" + (deck.auto ? " · A running" : "")
-                                color: deck.theme.dim
+                                color: deck.verdict.verdict === "open" ? deck.theme.red : deck.theme.dim
                                 font.pixelSize: 11
                             }
                         }
@@ -592,7 +625,7 @@ Scope {
                                 required property var modelData
                                 readonly property color tone: modelData.state === "ok" ? deck.theme.green
                                     : modelData.state === "bad" ? deck.theme.red
-                                    : modelData.state === "later" || modelData.state === "info" ? deck.theme.muted : deck.theme.violet
+                                    : modelData.state === "later" || modelData.state === "info" || modelData.state === "fixed" ? deck.theme.muted : deck.theme.violet
                                 width: qCol.width
                                 height: Math.max(17, detailText.implicitHeight)   // a failure wraps to show its reason
                                 spacing: 6
@@ -608,7 +641,7 @@ Scope {
                                 }
                                 Text {
                                     width: 14
-                                    text: ({ ok: "✓", bad: "✗", info: "•", running: "⟳", next: "▶", later: "·" })[modelData.state]
+                                    text: ({ ok: "✓", bad: "✗", fixed: "✗", info: "•", running: "⟳", next: "▶", later: "·" })[modelData.state]
                                     color: parent.tone
                                     font.pixelSize: 12; font.bold: true
                                 }
