@@ -152,6 +152,9 @@ def repo_info(repo):
         "input": INPUTS.get(repo), "draft": draft, "staged": staged,
         "commits": commits, "ship": ship_info(repo),
         "changelog": changelog(repo, ahead, staged),
+        # a tag land made and whose GitHub release isn't published yet (land release)
+        "release_pending": (repo / ".git/RELEASE_PENDING").read_text().strip()
+                           if (repo / ".git/RELEASE_PENDING").exists() else None,
     }
 
 
@@ -170,9 +173,11 @@ def main():
         ship_pending = sum(t["count"] for t in (i["ship"] or {}).get("targets", []))
         last = i["commits"][0]["ts"] if i["commits"] else 0
         recent = now - last < RECENT
-        i["active"] = bool(i["draft"] or i["staged"] or (i["ahead"] or 0) or ship_pending or (i["dirty"] or 0))
+        i["active"] = bool(i["draft"] or i["staged"] or (i["ahead"] or 0) or ship_pending or (i["dirty"] or 0)
+                           or i["release_pending"])
         # hot = something to do now, or worked on in the last two days: a big tile in the middle
-        i["hot"] = bool(i["draft"] or i["staged"] or (i["ahead"] or 0) or ship_pending or now - last < HOT)
+        i["hot"] = bool(i["draft"] or i["staged"] or (i["ahead"] or 0) or ship_pending or i["release_pending"]
+                        or now - last < HOT)
         i["group"], i["group_order"] = find_group(i["name"])
         if i["active"] or recent or i["path"] == str(NIXOS):
             tiles.append(i)

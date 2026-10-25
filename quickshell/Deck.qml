@@ -117,6 +117,14 @@ Scope {
                         detail: r.ahead + " commit(s) to push", args: [land, "bump", r.path] }
                     : { key: "push " + r.path, repo: r.path, label: "Push", short: "Push " + say(r), ask: "Push " + say(r) + "?",
                         detail: r.ahead + " commit(s): " + (r.commits[0] ? r.commits[0].subject : ""), args: [land, "push", r.path] });
+        // a tag land made: its GitHub release is public, so it's a step of its own (Y or N)
+        for (const r of repos)
+            if (r.release_pending)
+                steps.push({ key: "release " + r.path + " " + r.release_pending, repo: r.path, label: "Release",
+                             short: "Release " + say(r) + " " + r.release_pending,
+                             ask: "Publish GitHub release " + r.release_pending + " for " + say(r) + "?",
+                             detail: r.changelog ? r.changelog.heading : r.release_pending,
+                             args: [land, "release", r.path] });
         if (nixos && nixos.draft && nixos.staged.length)
             steps.push({ key: "commit " + nixosPath, repo: nixosPath, label: "Commit", short: "Commit nixos", ask: "Commit ~/nixos?",
                          detail: nixos.draft.subject, args: [land, "commit", nixosPath] });

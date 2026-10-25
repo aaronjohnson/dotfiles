@@ -11,7 +11,9 @@
 # LAND_EMBED=1 (how `ship` runs it first): only the drafts; no recent-commits view, no closing key.
 #
 # One step at a time (the quickshell deck, Super+F12, runs these; a click is the "yes"):
-#   land commit|bump|push|discard REPO  ·  land switch  ·  land needs-switch
+#   land commit|bump|push|discard|release REPO  ·  land switch  ·  land needs-switch
+# release: publish the GitHub release for the tag in REPO/.git/RELEASE_PENDING (written when
+# Bump tags one), titled and noted from the CHANGELOG (`misra release-notes`).
 # LAND_YES=1 answers every question yes and skips the "press Enter" pauses.
 set -u
 notify() {
@@ -82,6 +84,8 @@ print(p["mode"], p["plan"], p["tag"] or "-", p["reason"], sep="\t")')
     if ! { git -C "$r" tag -a "$ptag" -m "$ptag: $subject" && git -C "$r" push origin "$ptag"; }; then
       notify "Tagging $name failed ✗" "$ptag: see the commit window." 0; pause; return
     fi
+    # a GitHub release to publish, as its own step (public: the deck asks first)
+    git -C "$r" remote get-url origin 2>/dev/null | grep -q github.com && echo "$ptag" > "$r/.git/RELEASE_PENDING"
   fi
   if [[ "$mode" == tag ]]; then ref="$ptag"; else ref=$(git -C "$r" branch --show-current); fi
   # point the input at the tag (or the branch): github:owner/repo/<ref>
@@ -180,9 +184,20 @@ if [[ $# -gt 0 ]]; then
                   if git -C "$r" push; then notify "Pushed ${r/#"$HOME"/\~} ✓" "$(git -C "$r" log --oneline -1)"; exit 0; fi
                   notify "Push failed: ${r/#"$HOME"/\~} ✗" "See the deck." 0; exit 1 ;;
     discard)      rm -f "$r/.git/COMMIT_DRAFT" && notify "Removed draft" "${r/#"$HOME"/\~}"; exit 0 ;;
+    release)      tag=$(cat "$r/.git/RELEASE_PENDING" 2>/dev/null) || { echo "No release pending in $r."; exit 1; }
+                  # the installed misra, else the checkout's (a new misra can release itself before the switch)
+                  notes=$(misra release-notes "$r" "$tag" 2>/dev/null || nix run --quiet "$HOME/src/misra" -- release-notes "$r" "$tag") \
+                    || { echo "misra release-notes failed."; exit 1; }
+                  printf '\e[2mgh release create %s\e[0m\n' "$tag"
+                  if (cd "$r" && gh release create "$tag" --verify-tag --title "$(head -1 <<<"$notes")" \
+                        --notes "$(tail -n +2 <<<"$notes")"); then
+                    rm -f "$r/.git/RELEASE_PENDING"
+                    notify "Released ${r/#"$HOME"/\~} $tag ✓" "$(head -1 <<<"$notes")"; exit 0
+                  fi
+                  notify "Release failed: ${r/#"$HOME"/\~} $tag ✗" "See the deck." 0; exit 1 ;;
     switch)       switch_nixos; exit $? ;;
     needs-switch) needs_switch; exit $? ;;
-    *)            echo "usage: land [commit|bump|push|discard REPO | switch | needs-switch]"; exit 2 ;;
+    *)            echo "usage: land [commit|bump|push|discard|release REPO | switch | needs-switch]"; exit 2 ;;
   esac
 fi
 
