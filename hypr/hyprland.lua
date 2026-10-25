@@ -182,6 +182,10 @@ hl.config({
         active_opacity   = 1.0,
         inactive_opacity = 1.0,
 
+        -- Special workspaces (the land/ship popup, Super+S scratchpad) dim the
+        -- workspace behind them; blur.special below throws it out of focus.
+        dim_special      = 0.25,
+
         shadow = {
             enabled      = true,
             range        = 4,
@@ -194,6 +198,7 @@ hl.config({
             size      = 3,
             passes    = 1,
             vibrancy  = 0.1696,
+            special   = true,   -- blur behind special workspaces (costs GPU only while one is shown)
         },
     },
 
@@ -348,9 +353,9 @@ hl.bind(mainMod .. " + F1", hl.dsp.exec_cmd(terminal .. " --title Claude claude"
 
 -- Super+F12: land changes: commit the drafted messages, push and bump ~/nixos, switch
 -- (password through polkit), in a small floating window, with mako notifications.
-hl.bind(mainMod .. " + F12", hl.dsp.exec_cmd("kitty --class land --title 'Land' -e ~/dotfiles/bin/land"))
+hl.bind(mainMod .. " + F12", hl.dsp.exec_cmd("kitty --class land -o background_opacity=0.85 --title 'Land' -e ~/dotfiles/bin/land"))
 -- Super+F11: ship: deploy what changed since the last ship, per repo .ship file, asking first
-hl.bind(mainMod .. " + F11", hl.dsp.exec_cmd("kitty --class land --title 'Ship' -e ~/dotfiles/bin/ship"))
+hl.bind(mainMod .. " + F11", hl.dsp.exec_cmd("kitty --class land -o background_opacity=0.85 --title 'Ship' -e ~/dotfiles/bin/ship"))
 
 -- Super+F9: screenshot of the screen; +Shift: drag a region; +Alt: the focused window.
 -- Saved to ~/Pictures/Screenshots and copied to the clipboard (hyprshot notifies).
@@ -465,6 +470,9 @@ hl.window_rule({
 hl.window_rule({
     name   = "land-popup",
     match  = { class = "^land$" },
+    -- On its own special workspace, so everything behind it dims and blurs;
+    -- it closes with the window.
+    workspace = "special:land",
     float  = true,
     size   = "1000 640",
     center = true,
