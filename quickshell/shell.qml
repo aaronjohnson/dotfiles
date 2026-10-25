@@ -84,8 +84,13 @@ ShellRoot {
 
     // cities[0] is home. Re-evaluated once a minute with nowMs.
     readonly property bool homeIsDay: sunState(cities[0], tzOffsets[0], nowMs).isDay
-    onHomeIsDayChanged: setTheme(homeIsDay)
-    Component.onCompleted: setTheme(homeIsDay)
+    // misra's sky rules (rules/sky.lp) say when it's a grey day: rain, fog, a storm or
+    // leaden overcast. Then it's dark even at noon. skyWhy says why, for the tooltip.
+    property bool skyGloomy: false
+    property string skyWhy: ""
+    readonly property bool homeLight: homeIsDay && !skyGloomy
+    onHomeLightChanged: setTheme(homeLight)
+    Component.onCompleted: setTheme(homeLight)
 
     // `qs ipc call theme dark|light|sun`: override by hand (a grey day wants dark);
     // the next sunrise or sunset takes over again.
@@ -93,7 +98,7 @@ ShellRoot {
         target: "theme"
         function dark(): void { root.setTheme(false); }
         function light(): void { root.setTheme(true); }
-        function sun(): void { root.setTheme(root.homeIsDay); }
+        function sun(): void { root.setTheme(root.homeLight); }
     }
 
     function setTheme(light) {
@@ -148,6 +153,11 @@ ShellRoot {
         misraState.reload();
         var st;
         try { st = JSON.parse(misraState.text()); } catch (e) { st = null; }
+        // the sky: only a recent tick with weather under an hour old counts
+        var sky = st && st.sky && Date.now() / 1000 - st.time <= 120
+                  && st.sky.fetched && Date.now() / 1000 - st.sky.fetched <= 3600 ? st.sky : null;
+        root.skyGloomy = !!(sky && sky.gloomy);
+        root.skyWhy = sky && sky.gloomy ? sky.why.join(", ") : "";
         // Only a recent verdict counts (misra checks every 30 s).
         if (!st || !st.power || Date.now() / 1000 - st.time > 120 || st.power.ok) {
             root.powerDegraded = false;

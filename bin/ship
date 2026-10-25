@@ -82,8 +82,10 @@ ship_target() {
 # Firebase CLI tokens lapse after a while idle (first seen 2026-10-18).
 reauth_fix() {
   if grep -q 'firebase login --reauth' "$1"; then
+    # pinned firebase from nixpkgs, never npx (it runs whatever npm serves); the login is
+    # stored in ~/.config/configstore, so every project's devShell firebase sees it
     if command -v firebase >/dev/null; then echo "firebase login --reauth"
-    else echo "npx -y firebase-tools@latest login --reauth"; fi
+    else echo "nix shell nixpkgs#firebase-tools -c firebase login --reauth"; fi
   else return 1; fi
 }
 

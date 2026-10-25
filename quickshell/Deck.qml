@@ -142,7 +142,7 @@ Scope {
     // on a login, or on a step that's back after it ran (it would only fail the same way).
     property bool auto: false
     property var runningStep: null
-    property var done: []                 // steps run this opening: { key, short, ok }
+    property var done: []                 // steps run this opening: { key, label, repo, ok, line }
     function all() { if (!idle || !nextStep || needsLogin) return; auto = true; yes(); }
     function autoNext() {
         if (!auto || !idle || switchState === "checking") return;
@@ -202,7 +202,8 @@ Scope {
         onExited: (code) => {
             deck.setResult(deck.busyRepo, code === 0, deck.busyLabel, deck.busyLine);
             if (deck.runningStep)
-                deck.done = deck.done.concat([{ key: deck.runningStep.key, short: deck.runningStep.short, ok: code === 0 }]);
+                deck.done = deck.done.concat([{ key: deck.runningStep.key, label: deck.runningStep.label,
+                                                repo: deck.runningStep.repo, ok: code === 0, line: deck.busyLine }]);
             deck.runningStep = null;
             if (code !== 0) deck.auto = false;
             // a run that stopped for a re-login: the tab turns red with a Log in button
@@ -455,49 +456,10 @@ Scope {
                     }
                 }
 
-                // ---- ON DECK: done steps (✓/✗), the one up now, the rest in order ----
-                Flow {
-                    id: onDeck
-                    anchors { top: strip.bottom; topMargin: 8; horizontalCenter: parent.horizontalCenter }
-                    width: Math.min(implicitWidth, panel.width - 48)
-                    height: visible ? implicitHeight : 0
-                    visible: deck.done.length + deck.pending.length > 0
-                    spacing: 6
-                    // the running step is still pending[0] until the refresh lands
-                    readonly property var items: deck.done.map(d => ({ text: (d.ok ? "✓ " : "✗ ") + d.short, kind: d.ok ? "ok" : "bad" }))
-                        .concat(deck.pending.map((s, i) => ({ text: s.short, kind: i === 0 ? (deck.busyRepo !== "" ? "running" : "next") : "later" })))
-                    Text {
-                        height: 22; verticalAlignment: Text.AlignVCenter
-                        text: "ON DECK"
-                        color: deck.theme.violet
-                        font.pixelSize: 11; font.bold: true; font.letterSpacing: 1.5
-                    }
-                    Repeater {
-                        model: onDeck.items
-                        Row {
-                            required property var modelData
-                            required property int index
-                            spacing: 6
-                            Text {
-                                visible: index > 0
-                                height: 22; verticalAlignment: Text.AlignVCenter
-                                text: "›"; color: deck.theme.muted; font.pixelSize: 13
-                            }
-                            Chip {
-                                text: (modelData.kind === "running" ? "⟳ " : "") + modelData.text
-                                tone: modelData.kind === "ok" ? deck.theme.green
-                                    : modelData.kind === "bad" ? deck.theme.red
-                                    : modelData.kind === "later" ? deck.theme.muted : deck.theme.violet
-                                filled: modelData.kind === "next" || modelData.kind === "running"
-                            }
-                        }
-                    }
-                }
-
                 // quiet context under the tab: what the step is about, and how many follow
                 Text {
                     id: nextBar
-                    anchors { top: onDeck.bottom; topMargin: 6; horizontalCenter: parent.horizontalCenter }
+                    anchors { top: strip.bottom; topMargin: 6; horizontalCenter: parent.horizontalCenter }
                     width: Math.min(implicitWidth, panel.width * 0.7)
                     height: visible ? implicitHeight : 0
                     visible: !!deck.nextStep && deck.busyRepo === ""
@@ -591,10 +553,97 @@ Scope {
                 }
                 SideColumn {
                     id: rightSide
-                    anchors { top: rule.bottom; bottom: parent.bottom; right: parent.right; margins: 16; bottomMargin: 22 }
+                    anchors { top: rule.bottom; bottom: onDeck.visible ? onDeck.top : parent.bottom; right: parent.right
+                              margins: 16; bottomMargin: onDeck.visible ? 12 : 22 }
                     width: panel.width * 0.22
                     groupsHere: deck.sides.right
                     rowsHere: deck.sides.rightRows
+                }
+
+                // ---- ON DECK: the queue as a table, lower right ----
+                // Done rows (✓/✗ and their last line), the one running (live output) or
+                // next, then the rest in order. A walks down it.
+                Rectangle {
+                    id: onDeck
+                    anchors { right: parent.right; bottom: parent.bottom; margins: 16; bottomMargin: 22 }
+                    width: panel.width * 0.22
+                    height: visible ? qCol.implicitHeight + 20 : 0
+                    visible: deck.done.length + deck.pending.length > 0
+                    radius: 8
+                    color: deck.theme.bg
+                    opacity: 0.92
+                    border.width: 1
+                    border.color: deck.auto ? deck.theme.violet : deck.theme.muted
+
+                    readonly property var rows: deck.done.map(d => ({ state: d.ok ? "ok" : "bad", label: d.label, repo: d.repo, detail: d.line }))
+                        .concat(deck.pending.map((s, i) => ({
+                            state: i === 0 ? (deck.busyRepo !== "" ? "running" : "next") : "later",
+                            label: s.label, repo: s.repo,
+                            detail: i === 0 && deck.busyRepo !== "" ? deck.busyLine : s.detail })))
+                    function repoName(path) { return path === "system" ? "system" : path.split("/").pop(); }
+
+                    Column {
+                        id: qCol
+                        anchors { top: parent.top; left: parent.left; right: parent.right; margins: 10 }
+                        spacing: 3
+                        Row {
+                            spacing: 8
+                            Text {
+                                text: "ON DECK"
+                                color: deck.theme.violet
+                                font.pixelSize: 12; font.bold: true; font.letterSpacing: 1.5
+                            }
+                            Text {
+                                text: deck.done.length + " done · " + deck.pending.length + " to go" + (deck.auto ? " · A running" : "")
+                                color: deck.theme.dim
+                                font.pixelSize: 11
+                            }
+                        }
+                        Repeater {
+                            model: onDeck.rows.slice(-14)     // the newest 14: what's next stays in view
+                            Row {
+                                required property var modelData
+                                readonly property color tone: modelData.state === "ok" ? deck.theme.green
+                                    : modelData.state === "bad" ? deck.theme.red
+                                    : modelData.state === "later" ? deck.theme.muted : deck.theme.violet
+                                width: qCol.width
+                                height: 17
+                                spacing: 6
+                                Rectangle {     // a bar marks the row A is on
+                                    width: 3; height: parent.height
+                                    color: modelData.state === "next" || modelData.state === "running" ? deck.theme.violet : "transparent"
+                                }
+                                Text {
+                                    width: 14
+                                    text: ({ ok: "✓", bad: "✗", running: "⟳", next: "▶", later: "·" })[modelData.state]
+                                    color: parent.tone
+                                    font.pixelSize: 12; font.bold: true
+                                }
+                                Text {
+                                    width: 78
+                                    text: modelData.label
+                                    color: parent.tone
+                                    font.pixelSize: 11; font.bold: modelData.state !== "later"
+                                    elide: Text.ElideRight
+                                }
+                                Text {
+                                    width: 88
+                                    text: onDeck.repoName(modelData.repo)
+                                    color: modelData.state === "later" ? deck.theme.muted : deck.theme.cyan
+                                    font.pixelSize: 11
+                                    elide: Text.ElideRight
+                                }
+                                Text {
+                                    width: parent.width - 3 - 14 - 78 - 88 - 4 * 6
+                                    text: modelData.detail || ""
+                                    color: modelData.state === "later" ? deck.theme.muted : deck.theme.dim
+                                    font.pixelSize: 11
+                                    font.family: modelData.state === "running" ? "monospace" : Qt.application.font.family
+                                    elide: Text.ElideRight
+                                }
+                            }
+                        }
+                    }
                 }
 
                 // ---- timeline: under the hot tiles, in the middle ----
