@@ -36,6 +36,55 @@ hl.monitor({
     scale    = "auto",
 })
 
+-- An external screen (USB-C) is the main one: it sits at 0,0 with workspaces 1-5 and the focus,
+-- and the laptop panel goes to its right. With the lid closed the panel turns off; logind
+-- ignores the lid while docked (HandleLidSwitchDocked defaults to ignore), so the laptop keeps
+-- running. Rules for an output merge, so turning the panel back on needs disabled = false.
+local laptop = "eDP-1"
+
+local function lid_closed()
+  local f = io.open("/proc/acpi/button/lid/LID0/state")
+  if not f then return false end
+  local s = f:read("a"); f:close()
+  return s:find("closed") ~= nil
+end
+
+local function arrange()
+  local ext, panel
+  for _, m in ipairs(hl.get_monitors()) do
+    if m.name == laptop then panel = m else ext = ext or m end
+  end
+  local on = { output = laptop, disabled = false, mode = "preferred", scale = "auto" }
+  if not ext then   -- laptop alone: always on, at the origin
+    if not panel or panel.x ~= 0 then on.position = "0x0"; hl.monitor(on) end
+    return
+  end
+  -- only change what differs: each change re-fires monitor.added / monitor.removed
+  if ext.x ~= 0 or ext.y ~= 0 then
+    hl.monitor({ output = ext.name, mode = "preferred", position = "0x0", scale = "auto" })
+  end
+  local right = math.floor(ext.width / ext.scale)
+  if lid_closed() then
+    if panel then hl.monitor({ output = laptop, disabled = true }) end
+  elseif not panel or panel.x ~= right then
+    on.position = right .. "x0"; hl.monitor(on)
+  end
+  -- the panel shows 6 first, else Hyprland fills its gap with a new low workspace
+  if panel and not lid_closed() and panel.active_workspace.id <= 5 then
+    hl.dispatch(hl.dsp.focus({ monitor = laptop }))
+    hl.dispatch(hl.dsp.focus({ workspace = 6 }))
+  end
+  for i = 1, 5 do hl.dispatch(hl.dsp.workspace.move({ workspace = i, monitor = ext.name })) end
+  hl.dispatch(hl.dsp.focus({ monitor = ext.name }))
+end
+
+arrange()                              -- on every config reload
+hl.on("hyprland.start", arrange)
+hl.on("monitor.added", arrange)
+hl.on("monitor.removed", arrange)
+hl.bind("switch:on:Lid Switch",  arrange, { locked = true })
+hl.bind("switch:off:Lid Switch", arrange, { locked = true })
+
 
 ---------------------
 ---- MY PROGRAMS ----
