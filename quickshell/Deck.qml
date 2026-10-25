@@ -646,7 +646,7 @@ Scope {
                                        : deck.verdict.verdict === "open" ? deck.verdict.open.length + " open · " : "")
                                       + (deck.loading ? "reading repos · " : "") + (deck.switchState === "checking" ? "checking switch · " : "")
                                       + deck.pending.length + " to go" + (deck.auto ? " · A running" : "")
-                                color: deck.verdict.verdict === "open" ? deck.theme.red : deck.theme.dim
+                                color: deck.verdict.verdict === "open" ? deck.theme.yellow : deck.theme.dim   // red is for the failed row itself
                                 font.pixelSize: 11
                             }
                         }
@@ -736,7 +736,7 @@ Scope {
                                 Text {
                                     width: parent.width
                                     text: pushLog.cl ? pushLog.cl.file.toUpperCase() + " · " + pushLog.cl.heading : ""
-                                    color: pushLog.cl && pushLog.cl.updated ? deck.theme.yellow : deck.theme.orange
+                                    color: deck.theme.yellow
                                     font.pixelSize: 13; font.bold: true
                                     wrapMode: Text.Wrap; maximumLineCount: 2; elide: Text.ElideRight
                                 }
@@ -744,7 +744,7 @@ Scope {
                                     width: parent.width
                                     text: !pushLog.cl ? "" : pushLog.cl.updated ? pushLog.cl.body
                                         : "not touched by the commits going out: write the entry before pushing?"
-                                    color: pushLog.cl && pushLog.cl.updated ? deck.theme.fg : deck.theme.orange
+                                    color: pushLog.cl && pushLog.cl.updated ? deck.theme.fg : deck.theme.dim
                                     font.pixelSize: 12
                                     wrapMode: Text.Wrap; maximumLineCount: 5; elide: Text.ElideRight
                                 }
@@ -891,7 +891,7 @@ Scope {
                                             font.pixelSize: 15; font.bold: true
                                         }
                                         Chip { text: r.branch; tone: deck.theme.cyan }
-                                        Chip { visible: (r.ahead || 0) > 0; text: "↑" + r.ahead + " unpushed"; tone: deck.theme.orange }
+                                        Chip { visible: (r.ahead || 0) > 0; text: "↑" + r.ahead + " unpushed"; tone: deck.theme.cyan }
                                         Chip { visible: (r.behind || 0) > 0; text: "↓" + r.behind; tone: deck.theme.blue }
                                         Chip { visible: (r.dirty || 0) > 0; text: r.dirty + " unstaged"; tone: deck.theme.muted }
                                         Chip { visible: !!r.input; text: "flake input"; tone: deck.theme.violet }
@@ -903,9 +903,9 @@ Scope {
                                         width: parent.width
                                         height: visible ? clCol.implicitHeight + 12 : 0
                                         radius: 6
-                                        color: Qt.alpha(r.changelog && !r.changelog.updated && (r.ahead || 0) > 0 ? deck.theme.orange : deck.theme.yellow, 0.10)
+                                        color: Qt.alpha(deck.theme.yellow, 0.10)
                                         border.width: 1
-                                        border.color: r.changelog && !r.changelog.updated && (r.ahead || 0) > 0 ? deck.theme.orange : deck.theme.yellow
+                                        border.color: deck.theme.yellow
                                         Column {
                                             id: clCol
                                             anchors { top: parent.top; left: parent.left; right: parent.right; margins: 6 }
@@ -928,8 +928,8 @@ Scope {
                                             Text {
                                                 visible: !!r.changelog && !r.changelog.updated && (r.ahead || 0) > 0
                                                 text: "↑" + (r.ahead || 0) + " to push, " + (r.changelog ? r.changelog.file : "") + " not touched"
-                                                color: deck.theme.orange
-                                                font.pixelSize: 11; font.bold: true
+                                                color: deck.theme.dim       // a quiet note, not an alarm
+                                                font.pixelSize: 11
                                             }
                                         }
                                     }
@@ -981,7 +981,7 @@ Scope {
                                             text: "⇪ " + modelData.name + ": " + (modelData.count === 0 ? "up to date"
                                                 : modelData.count + " changed" + (modelData.first ? " (first ship)" : "")
                                                   + "  ·  " + modelData.changed.slice(0, 3).join(", "))
-                                            color: modelData.count ? deck.theme.orange : deck.theme.muted
+                                            color: modelData.count ? deck.theme.yellow : deck.theme.muted
                                             font.pixelSize: 11
                                             elide: Text.ElideRight
                                         }
@@ -1009,7 +1009,7 @@ Scope {
                                         }
                                         Chip {
                                             visible: !!r.draft && r.staged.length === 0
-                                            text: "Discard stale draft"; tone: deck.theme.red; action: true
+                                            text: "Discard stale draft"; tone: deck.theme.yellow; action: true
                                             enabledAction: deck.idle
                                             onClicked: deck.run(r.path, "Discard", [deck.land, "discard", r.path])
                                         }
@@ -1021,7 +1021,7 @@ Scope {
                                         }
                                         Chip {
                                             visible: !r.input && (r.ahead || 0) > 0
-                                            text: "Push ↑" + r.ahead; tone: deck.theme.orange; action: true
+                                            text: "Push ↑" + r.ahead; tone: deck.theme.violet; action: true
                                             enabledAction: deck.idle
                                             onClicked: deck.run(r.path, "Push", [deck.land, "push", r.path])
                                         }
@@ -1029,7 +1029,7 @@ Scope {
                                             model: tile.targets.filter(t => t.count > 0)
                                             Chip {
                                                 required property var modelData
-                                                text: "Ship " + modelData.name; tone: deck.theme.orange; filled: true; action: true
+                                                text: "Ship " + modelData.name; tone: deck.theme.violet; filled: true; action: true
                                                 enabledAction: deck.idle
                                                 onClicked: deck.run(r.path, "Ship " + modelData.name, [deck.ship, "target", r.path, modelData.name])
                                             }

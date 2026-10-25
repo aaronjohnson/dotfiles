@@ -114,8 +114,11 @@ def changelog(repo, ahead, staged):
             body.append(line.strip())
     pending = set((git(repo, "diff", "--name-only", "@{u}..HEAD") or "").split()) if ahead else set()
     pending |= {x["file"] for x in staged}
+    # commits that only move flake inputs (a ~/nixos bump) tell their story in the
+    # input's own CHANGELOG: nothing to write here
+    bumps_only = bool(pending) and pending <= {"flake.lock", "flake.nix"}
     return {"file": f.name, "heading": heading or "", "body": " ".join(body)[:500],
-            "updated": f.name in pending}
+            "updated": f.name in pending or bumps_only}
 
 
 def repo_info(repo):
