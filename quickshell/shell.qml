@@ -87,6 +87,15 @@ ShellRoot {
     onHomeIsDayChanged: setTheme(homeIsDay)
     Component.onCompleted: setTheme(homeIsDay)
 
+    // `qs ipc call theme dark|light|sun`: override by hand (a grey day wants dark);
+    // the next sunrise or sunset takes over again.
+    IpcHandler {
+        target: "theme"
+        function dark(): void { root.setTheme(false); }
+        function light(): void { root.setTheme(true); }
+        function sun(): void { root.setTheme(root.homeIsDay); }
+    }
+
     function setTheme(light) {
         lightMode = light;
         schemeSetter.running = false;

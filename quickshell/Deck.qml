@@ -46,11 +46,12 @@ Scope {
     }
     function refresh() { loading = true; statusProc.running = true; }
     function checkSwitch() { switchState = "checking"; switchProc.running = true; }
-    function show() { open = true; skipped = ({}); refresh(); checkSwitch(); }
+    function show() { open = true; skipped = ({}); done = []; auto = false; refresh(); checkSwitch(); }
 
     // ---- y/N, like the terminal land: the next step, in land's order ----
     // Commit each drafted repo (~/nixos last), push / push + bump, switch, push ~/nixos,
     // then ship. y or Enter runs it, n or Space skips it for this opening, Esc closes.
+    // a runs them all, one after another (see autoNext).
     property var skipped: ({})
     readonly property string nixosPath: home + "/nixos"
     readonly property var plan: {
@@ -58,31 +59,32 @@ Scope {
         const repos = data.repos || [];
         const nixos = repos.find(r => r.path === nixosPath);
         const say = r => r.name;
+        // short: the step's name on the on-deck strip
         for (const r of repos)
             if (r.path !== nixosPath && r.draft && r.staged.length)
                 steps.push({ key: "commit " + r.path, repo: r.path, label: "Commit",
-                             ask: "Commit " + say(r) + "?", detail: r.draft.subject, args: [land, "commit", r.path] });
+                             short: "Commit " + say(r), ask: "Commit " + say(r) + "?", detail: r.draft.subject, args: [land, "commit", r.path] });
         for (const r of repos)
             if (r.path !== nixosPath && (r.ahead || 0) > 0)
                 steps.push(r.input
-                    ? { key: "bump " + r.path, repo: r.path, label: "Bump", ask: "Push " + say(r) + " and update ~/nixos to it?",
+                    ? { key: "bump " + r.path, repo: r.path, label: "Bump", short: "Bump " + say(r), ask: "Push " + say(r) + " and update ~/nixos to it?",
                         detail: r.ahead + " commit(s) to push", args: [land, "bump", r.path] }
-                    : { key: "push " + r.path, repo: r.path, label: "Push", ask: "Push " + say(r) + "?",
+                    : { key: "push " + r.path, repo: r.path, label: "Push", short: "Push " + say(r), ask: "Push " + say(r) + "?",
                         detail: r.ahead + " commit(s): " + (r.commits[0] ? r.commits[0].subject : ""), args: [land, "push", r.path] });
         if (nixos && nixos.draft && nixos.staged.length)
-            steps.push({ key: "commit " + nixosPath, repo: nixosPath, label: "Commit", ask: "Commit ~/nixos?",
+            steps.push({ key: "commit " + nixosPath, repo: nixosPath, label: "Commit", short: "Commit nixos", ask: "Commit ~/nixos?",
                          detail: nixos.draft.subject, args: [land, "commit", nixosPath] });
         if (switchState === "differs")
-            steps.push({ key: "switch", repo: "system", label: "Switch", ask: "Switch to the new ~/nixos now?",
+            steps.push({ key: "switch", repo: "system", label: "Switch", short: "Switch", ask: "Switch to the new ~/nixos now?",
                          detail: "password through the prompt", args: [land, "switch"] });
         if (nixos && (nixos.ahead || 0) > 0)
-            steps.push({ key: "push " + nixosPath, repo: nixosPath, label: "Push", ask: "Push ~/nixos?",
+            steps.push({ key: "push " + nixosPath, repo: nixosPath, label: "Push", short: "Push nixos", ask: "Push ~/nixos?",
                          detail: nixos.ahead + " commit(s)", args: [land, "push", nixosPath] });
         for (const r of repos)
             for (const t of (r.ship ? r.ship.targets : []))
                 if (t.count > 0)
                     steps.push({ key: "ship " + r.path + " " + t.name, repo: r.path, label: "Ship " + t.name,
-                                 ask: "Ship " + t.name + " from " + say(r) + "?", detail: t.count + " file(s) changed",
+                                 short: "Ship " + say(r) + " " + t.name, ask: "Ship " + t.name + " from " + say(r) + "?", detail: t.count + " file(s) changed",
                                  args: [ship, "target", r.path, t.name] });
         return steps;
     }
@@ -122,12 +124,36 @@ Scope {
         return { left: left.sort(byOrder), right: right.sort(byOrder), leftRows: rows(left), rightRows: rows(right) };
     }
 
-    function yes() { if (idle && nextStep) run(nextStep.repo, nextStep.label, nextStep.args); }
+    function yes() {
+        if (!idle || !nextStep) return;
+        runningStep = nextStep;
+        run(nextStep.repo, nextStep.label, nextStep.args);
+    }
     function no() {
+        if (auto) { auto = false; return; }   // during A, N stops the run; the queue stays
         if (!nextStep) return;
         const s = Object.assign({}, skipped); s[nextStep.key] = true; skipped = s;
     }
-    function hide() { open = false; }
+    function hide() { open = false; auto = false; }   // a step already running finishes
+
+    // ---- A: run the queue to the end ----
+    // After each step the repos are re-read (and the switch re-checked), so the plan grows
+    // as it goes: Commit brings Push, ~/nixos's Commit brings Switch. A stops on a failure,
+    // on a login, or on a step that's back after it ran (it would only fail the same way).
+    property bool auto: false
+    property var runningStep: null
+    property var done: []                 // steps run this opening: { key, short, ok }
+    function all() { if (!idle || !nextStep || needsLogin) return; auto = true; yes(); }
+    function autoNext() {
+        if (!auto || !idle || switchState === "checking") return;
+        if (!nextStep || needsLogin) { auto = false; return; }
+        if (done.some(d => d.key === nextStep.key)) { auto = false; return; }
+        yes();
+    }
+    // callLater: an action's onExited clears busyRepo before it starts the refresh;
+    // waiting a tick lets loading turn true first, so the plan is never read stale
+    onIdleChanged: Qt.callLater(autoNext)
+    onSwitchStateChanged: Qt.callLater(autoNext)
 
     function run(repo, label, args) {
         if (!idle) return;
@@ -175,6 +201,10 @@ Scope {
         }
         onExited: (code) => {
             deck.setResult(deck.busyRepo, code === 0, deck.busyLabel, deck.busyLine);
+            if (deck.runningStep)
+                deck.done = deck.done.concat([{ key: deck.runningStep.key, short: deck.runningStep.short, ok: code === 0 }]);
+            deck.runningStep = null;
+            if (code !== 0) deck.auto = false;
             // a run that stopped for a re-login: the tab turns red with a Log in button
             const login = /run `([^`]+)`/.exec(deck.busyLine);
             deck.loginCmd = code !== 0 && login ? login[1] : "";
@@ -283,6 +313,7 @@ Scope {
                     else if (event.key === Qt.Key_Y || event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
                         if (deck.needsLogin) deck.logIn(); else deck.yes();
                     }
+                    else if (event.key === Qt.Key_A) { if (!deck.needsLogin) deck.all(); }
                     else if (event.key === Qt.Key_N || event.key === Qt.Key_Space) deck.no();
                     else if (event.key === Qt.Key_R) { deck.refresh(); deck.checkSwitch(); }
                     else return;
@@ -294,7 +325,7 @@ Scope {
                     theme: deck.theme
                     title: "Land · Ship"
                     detail: "Super+F12"
-                    hint: "Y run next · N skip · or click a chip · R refresh · Esc close · terminal: Super+Shift+F12"
+                    hint: "Y run next · N skip · A all, then status · or click a chip · R refresh · Esc close · terminal: Super+Shift+F12"
                 }
 
                 // ---- system strip ----
@@ -373,7 +404,7 @@ Scope {
                         spacing: 12
                         Text {
                             anchors.verticalCenter: parent.verticalCenter
-                            text: deck.busyRepo !== "" ? "RUNNING" : deck.needsLogin ? "LOGIN" : deck.nextStep ? "NEXT" : "DONE"
+                            text: deck.busyRepo !== "" ? (deck.auto ? "ALL" : "RUNNING") : deck.needsLogin ? "LOGIN" : deck.nextStep ? "NEXT" : "DONE"
                             color: deck.theme.surface
                             opacity: 0.85
                             font.pixelSize: 12; font.bold: true; font.letterSpacing: 2
@@ -385,6 +416,8 @@ Scope {
                                 : deck.loading ? "reading repos…"
                                 : deck.nextStep ? deck.nextStep.ask
                                 : deck.switchState === "checking" ? "checking whether a switch is needed…"
+                                : deck.done.length ? deck.done.filter(d => d.ok).length + " of " + deck.done.length
+                                  + " steps done" + (deck.done.every(d => d.ok) ? " ✓ nothing left" : " ✗ see below")
                                 : "Nothing left to land or ship"
                             color: deck.theme.surface
                             font.pixelSize: 16; font.bold: true
@@ -399,10 +432,17 @@ Scope {
                             onClicked: deck.yes()
                         }
                         Chip {
+                            visible: !!deck.nextStep && !deck.needsLogin && !deck.auto
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: "A  all"; tone: deck.theme.surface; textColor: deck.theme.violet; filled: true; action: true
+                            enabledAction: deck.idle
+                            onClicked: deck.all()
+                        }
+                        Chip {
                             visible: !!deck.nextStep && !deck.needsLogin
                             anchors.verticalCenter: parent.verticalCenter
-                            text: "N  skip"; tone: deck.theme.surface; action: true
-                            enabledAction: deck.idle
+                            text: deck.auto ? "N  stop" : "N  skip"; tone: deck.theme.surface; action: true
+                            enabledAction: deck.idle || deck.auto
                             onClicked: deck.no()
                         }
                         Chip {
@@ -415,10 +455,49 @@ Scope {
                     }
                 }
 
+                // ---- ON DECK: done steps (✓/✗), the one up now, the rest in order ----
+                Flow {
+                    id: onDeck
+                    anchors { top: strip.bottom; topMargin: 8; horizontalCenter: parent.horizontalCenter }
+                    width: Math.min(implicitWidth, panel.width - 48)
+                    height: visible ? implicitHeight : 0
+                    visible: deck.done.length + deck.pending.length > 0
+                    spacing: 6
+                    // the running step is still pending[0] until the refresh lands
+                    readonly property var items: deck.done.map(d => ({ text: (d.ok ? "✓ " : "✗ ") + d.short, kind: d.ok ? "ok" : "bad" }))
+                        .concat(deck.pending.map((s, i) => ({ text: s.short, kind: i === 0 ? (deck.busyRepo !== "" ? "running" : "next") : "later" })))
+                    Text {
+                        height: 22; verticalAlignment: Text.AlignVCenter
+                        text: "ON DECK"
+                        color: deck.theme.violet
+                        font.pixelSize: 11; font.bold: true; font.letterSpacing: 1.5
+                    }
+                    Repeater {
+                        model: onDeck.items
+                        Row {
+                            required property var modelData
+                            required property int index
+                            spacing: 6
+                            Text {
+                                visible: index > 0
+                                height: 22; verticalAlignment: Text.AlignVCenter
+                                text: "›"; color: deck.theme.muted; font.pixelSize: 13
+                            }
+                            Chip {
+                                text: (modelData.kind === "running" ? "⟳ " : "") + modelData.text
+                                tone: modelData.kind === "ok" ? deck.theme.green
+                                    : modelData.kind === "bad" ? deck.theme.red
+                                    : modelData.kind === "later" ? deck.theme.muted : deck.theme.violet
+                                filled: modelData.kind === "next" || modelData.kind === "running"
+                            }
+                        }
+                    }
+                }
+
                 // quiet context under the tab: what the step is about, and how many follow
                 Text {
                     id: nextBar
-                    anchors { top: strip.bottom; topMargin: 6; horizontalCenter: parent.horizontalCenter }
+                    anchors { top: onDeck.bottom; topMargin: 6; horizontalCenter: parent.horizontalCenter }
                     width: Math.min(implicitWidth, panel.width * 0.7)
                     height: visible ? implicitHeight : 0
                     visible: !!deck.nextStep && deck.busyRepo === ""
