@@ -374,6 +374,7 @@ Scope {
                 // Where the eye lands when the deck opens; the title tab sits at the left.
                 Rectangle {
                     id: askTab
+                    visible: false     // the question lives at the foot of the log, lower right
                     z: 20
                     anchors.horizontalCenter: parent.horizontalCenter
                     y: -height / 2
@@ -552,7 +553,7 @@ Scope {
                     anchors { right: parent.right; bottom: parent.bottom; margins: 16; bottomMargin: 22 }
                     width: panel.width * 0.22
                     height: visible ? qCol.implicitHeight + 20 : 0
-                    visible: deck.log.length + deck.pending.length > 0
+                    visible: true      // it holds the question, so it's always there
                     radius: 8
                     color: deck.theme.bg
                     opacity: 0.92
@@ -636,6 +637,55 @@ Scope {
                                     font.pixelSize: 11
                                     font.family: modelData.state === "running" ? "monospace" : Qt.application.font.family
                                     elide: Text.ElideRight
+                                }
+                            }
+                        }
+                        // ---- the question: what Y would do now, and the keys ----
+                        Rectangle { width: qCol.width; height: 1; color: deck.theme.muted; opacity: 0.4 }
+                        Item {
+                            width: qCol.width
+                            height: askText.implicitHeight + (keys.visible ? keys.height + 6 : 0) + 4
+                            Text {
+                                id: askText
+                                anchors { top: parent.top; left: parent.left; right: parent.right; topMargin: 2 }
+                                text: deck.busyRepo !== "" ? (deck.auto ? "A: " : "") + deck.busyLabel + " " + onDeck.repoName(deck.busyRepo) + "…"
+                                    : deck.needsLogin ? deck.needsLogin
+                                    : deck.loading ? "Reading repos…"
+                                    : deck.nextStep ? deck.nextStep.ask
+                                    : deck.switchState === "checking" ? "Checking whether a switch is needed…"
+                                    : "Nothing left to land or ship"
+                                color: deck.needsLogin ? deck.theme.red
+                                     : deck.nextStep || deck.busyRepo !== "" ? deck.theme.violet : deck.theme.green
+                                font.pixelSize: 14; font.bold: true
+                                wrapMode: Text.Wrap
+                            }
+                            Row {
+                                id: keys
+                                anchors { top: askText.bottom; topMargin: 6; left: parent.left }
+                                spacing: 6
+                                visible: (!!deck.nextStep || !!deck.needsLogin) && (deck.busyRepo === "" || deck.auto)
+                                Chip {
+                                    visible: !!deck.nextStep && !deck.needsLogin && !deck.auto
+                                    text: "Y  yes"; tone: deck.theme.violet; filled: true; action: true
+                                    enabledAction: deck.idle
+                                    onClicked: deck.yes()
+                                }
+                                Chip {
+                                    visible: !!deck.nextStep && !deck.needsLogin && !deck.auto
+                                    text: "A  all"; tone: deck.theme.violet; filled: true; action: true
+                                    enabledAction: deck.idle
+                                    onClicked: deck.all()
+                                }
+                                Chip {
+                                    visible: !!deck.nextStep && !deck.needsLogin
+                                    text: deck.auto ? "N  stop" : "N  skip"; tone: deck.theme.violet; action: true
+                                    enabledAction: deck.idle || deck.auto
+                                    onClicked: deck.no()
+                                }
+                                Chip {
+                                    visible: !!deck.needsLogin
+                                    text: "Y  log in"; tone: deck.theme.red; filled: true; action: true
+                                    onClicked: deck.logIn()
                                 }
                             }
                         }
@@ -861,7 +911,7 @@ Scope {
 
                                     // progress / last result
                                     Text {
-                                        visible: tile.busy || tile.result !== undefined
+                                        visible: false     // progress and results are in the log
                                         width: parent.width
                                         text: tile.busy ? "⟳ " + deck.busyLabel + ": " + deck.busyLine
                                             : tile.result ? (tile.result.ok ? "✓ " : "✗ ") + tile.result.label + ": " + tile.result.line : ""
