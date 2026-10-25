@@ -63,9 +63,9 @@ commit_repo() {
 # After committing a flake input: push it, point ~/nixos at it, build, draft the bump.
 bump_nixos() {
   local r="$1" input="$2" name="${1/#"$HOME"/\~}" rev subject
-  ask "Push $name and update ~/nixos to it?" || return
+  ask "Push $name and update ~/nixos to it?" || return 1
   printf '\e[2mgit push\e[0m\n'
-  if ! git -C "$r" push; then notify "Push failed: $name ✗" "Nothing else changed." 0; pause; return; fi
+  if ! git -C "$r" push; then notify "Push failed: $name ✗" "Nothing else changed." 0; pause; return 1; fi
   rev=$(git -C "$r" rev-parse --short HEAD)
   subject=$(git -C "$r" log -1 --format=%s)
 
@@ -82,7 +82,7 @@ print(p["mode"], p["plan"], p["tag"] or "-", p["reason"], sep="\t")')
   if [[ "$pplan" == new_tag ]]; then
     printf '\e[2mgit tag -a %s; git push origin %s\e[0m\n' "$ptag" "$ptag"
     if ! { git -C "$r" tag -a "$ptag" -m "$ptag: $subject" && git -C "$r" push origin "$ptag"; }; then
-      notify "Tagging $name failed ✗" "$ptag: see the commit window." 0; pause; return
+      notify "Tagging $name failed ✗" "$ptag: see the commit window." 0; pause; return 1
     fi
     # a GitHub release to publish, as its own step (public: the deck asks first)
     git -C "$r" remote get-url origin 2>/dev/null | grep -q github.com && echo "$ptag" > "$r/.git/RELEASE_PENDING"
@@ -94,17 +94,17 @@ print(p["mode"], p["plan"], p["tag"] or "-", p["reason"], sep="\t")')
   # --refresh: Nix otherwise reuses its cached idea of the branch for an hour.
   printf '\e[2mnix flake update %s --refresh\e[0m\n' "$input"
   if ! (cd "$nixos" && nix flake update "$input" --refresh); then
-    notify "Updating ~/nixos failed ✗" "$input: see the commit window." 0; pause; return
+    notify "Updating ~/nixos failed ✗" "$input: see the commit window." 0; pause; return 1
   fi
   if git -C "$nixos" diff --quiet -- flake.lock flake.nix; then
     echo "~/nixos already points at $input $rev."
-    return
+    return 0
   fi
   printf '\e[2mbuilding the new system (no switch yet)...\e[0m\n'
   if ! (cd "$nixos" && nix build --no-link ".#nixosConfigurations.hadron.config.system.build.toplevel" 2>&1 | tail -5; exit "${PIPESTATUS[0]}"); then
     notify "~/nixos doesn't build with $input $rev ✗" "flake.lock is updated but not staged." 0
     pause
-    return
+    return 1
   fi
   git -C "$nixos" add flake.lock flake.nix
   local draft="$nixos/.git/COMMIT_DRAFT" at="$rev"
@@ -118,6 +118,7 @@ print(p["mode"], p["plan"], p["tag"] or "-", p["reason"], sep="\t")')
     printf '\nBumps %s to %s. Release: %s.\n' "$input" "$at" "$reason" >> "$draft"
   fi
   echo "~/nixos: flake.nix and flake.lock staged, draft written."
+  return 0
 }
 
 # Does ~/nixos build to something other than the running system? Builds as the user
@@ -178,8 +179,7 @@ if [[ $# -gt 0 ]]; then
                   # a flake input's commit is only half the job: the deck offers Bump next
                   exit 0 ;;
     bump)         [[ -n "${inputs[$r]:-}" ]] || { echo "$r is not a ~/nixos flake input."; exit 1; }
-                  bump_nixos "$r" "${inputs[$r]}"
-                  git -C "$nixos" diff --cached --quiet -- flake.lock && exit 1 || exit 0 ;;
+                  bump_nixos "$r" "${inputs[$r]}"; exit $? ;;   # its own result, not whatever is staged
     push)         printf '\e[2mgit push\e[0m\n'
                   if git -C "$r" push; then notify "Pushed ${r/#"$HOME"/\~} ✓" "$(git -C "$r" log --oneline -1)"; exit 0; fi
                   notify "Push failed: ${r/#"$HOME"/\~} ✗" "See the deck." 0; exit 1 ;;
