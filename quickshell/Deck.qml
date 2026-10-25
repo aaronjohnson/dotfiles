@@ -686,7 +686,11 @@ Scope {
                         Rectangle { width: qCol.width; height: 1; color: deck.theme.muted; opacity: 0.4 }
                         Item {
                             width: qCol.width
-                            height: askText.implicitHeight + (keys.visible ? keys.height + 6 : 0) + 4
+                            height: askText.implicitHeight + (pushLog.visible ? pushLog.implicitHeight + 8 : 0)
+                                    + (keys.visible ? keys.height + 6 : 0) + 4
+                            // a push is about to publish: show what its CHANGELOG says goes out
+                            readonly property var pushRepo: deck.nextStep && /^(Push|Bump)/.test(deck.nextStep.label)
+                                ? (deck.data.repos || []).find(r => r.path === deck.nextStep.repo) : null
                             Text {
                                 id: askText
                                 anchors { top: parent.top; left: parent.left; right: parent.right; topMargin: 2 }
@@ -701,9 +705,31 @@ Scope {
                                 font.pixelSize: 14; font.bold: true
                                 wrapMode: Text.Wrap
                             }
+                            Column {
+                                id: pushLog
+                                anchors { top: askText.bottom; topMargin: 8; left: parent.left; right: parent.right }
+                                visible: !!(parent.pushRepo && parent.pushRepo.changelog)
+                                spacing: 2
+                                readonly property var cl: parent.pushRepo ? parent.pushRepo.changelog : null
+                                Text {
+                                    width: parent.width
+                                    text: pushLog.cl ? pushLog.cl.file.toUpperCase() + " · " + pushLog.cl.heading : ""
+                                    color: pushLog.cl && pushLog.cl.updated ? deck.theme.yellow : deck.theme.orange
+                                    font.pixelSize: 13; font.bold: true
+                                    wrapMode: Text.Wrap; maximumLineCount: 2; elide: Text.ElideRight
+                                }
+                                Text {
+                                    width: parent.width
+                                    text: !pushLog.cl ? "" : pushLog.cl.updated ? pushLog.cl.body
+                                        : "not touched by the commits going out: write the entry before pushing?"
+                                    color: pushLog.cl && pushLog.cl.updated ? deck.theme.fg : deck.theme.orange
+                                    font.pixelSize: 12
+                                    wrapMode: Text.Wrap; maximumLineCount: 5; elide: Text.ElideRight
+                                }
+                            }
                             Row {
                                 id: keys
-                                anchors { top: askText.bottom; topMargin: 6; left: parent.left }
+                                anchors { top: pushLog.visible ? pushLog.bottom : askText.bottom; topMargin: 6; left: parent.left }
                                 spacing: 6
                                 visible: (!!deck.nextStep || !!deck.needsLogin) && (deck.busyRepo === "" || deck.auto)
                                 Chip {
@@ -847,6 +873,43 @@ Scope {
                                         Chip { visible: (r.behind || 0) > 0; text: "↓" + r.behind; tone: deck.theme.blue }
                                         Chip { visible: (r.dirty || 0) > 0; text: r.dirty + " unstaged"; tone: deck.theme.muted }
                                         Chip { visible: !!r.input; text: "flake input"; tone: deck.theme.violet }
+                                    }
+
+                                    // CHANGELOG: the newest entry, above the commit history and louder than it
+                                    Rectangle {
+                                        visible: !!r.changelog
+                                        width: parent.width
+                                        height: visible ? clCol.implicitHeight + 12 : 0
+                                        radius: 6
+                                        color: Qt.alpha(r.changelog && !r.changelog.updated && (r.ahead || 0) > 0 ? deck.theme.orange : deck.theme.yellow, 0.10)
+                                        border.width: 1
+                                        border.color: r.changelog && !r.changelog.updated && (r.ahead || 0) > 0 ? deck.theme.orange : deck.theme.yellow
+                                        Column {
+                                            id: clCol
+                                            anchors { top: parent.top; left: parent.left; right: parent.right; margins: 6 }
+                                            spacing: 2
+                                            Text {
+                                                width: parent.width
+                                                text: r.changelog ? r.changelog.heading : ""
+                                                color: deck.theme.yellow
+                                                font.pixelSize: 14; font.bold: true
+                                                wrapMode: Text.Wrap; maximumLineCount: 2; elide: Text.ElideRight
+                                            }
+                                            Text {
+                                                width: parent.width
+                                                text: r.changelog ? r.changelog.body : ""
+                                                visible: text !== ""
+                                                color: deck.theme.fg
+                                                font.pixelSize: 12
+                                                wrapMode: Text.Wrap; maximumLineCount: 4; elide: Text.ElideRight
+                                            }
+                                            Text {
+                                                visible: !!r.changelog && !r.changelog.updated && (r.ahead || 0) > 0
+                                                text: "↑" + (r.ahead || 0) + " to push, " + (r.changelog ? r.changelog.file : "") + " not touched"
+                                                color: deck.theme.orange
+                                                font.pixelSize: 11; font.bold: true
+                                            }
+                                        }
                                     }
 
                                     // drafted commit

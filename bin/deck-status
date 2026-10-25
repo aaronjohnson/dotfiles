@@ -98,6 +98,26 @@ def ship_info(repo):
     return {"note": note.read_text().strip() if note.exists() else "", "targets": targets}
 
 
+def changelog(repo, ahead, staged):
+    """The newest CHANGELOG entry (its heading and first lines), and whether the commits
+    about to be pushed, or what's staged, touch it. None when the repo keeps no changelog."""
+    f = next((repo / n for n in ("CHANGELOG.md", "CHANGELOG.txt", "CHANGELOG") if (repo / n).exists()), None)
+    if f is None:
+        return None
+    heading, body = None, []
+    for line in f.read_text(errors="replace").splitlines():
+        if line.startswith("## "):
+            if heading:
+                break
+            heading = line[3:].strip()
+        elif heading and line.strip() and not line.startswith("#"):
+            body.append(line.strip())
+    pending = set((git(repo, "diff", "--name-only", "@{u}..HEAD") or "").split()) if ahead else set()
+    pending |= {x["file"] for x in staged}
+    return {"file": f.name, "heading": heading or "", "body": " ".join(body)[:500],
+            "updated": f.name in pending}
+
+
 def repo_info(repo):
     log = git(repo, "log", "-20", "--format=%h\x1f%ct\x1f%s")
     commits = []
@@ -131,6 +151,7 @@ def repo_info(repo):
         "ahead": ahead, "behind": behind, "dirty": dirty, "dirty_files": dirty_files[:12],
         "input": INPUTS.get(repo), "draft": draft, "staged": staged,
         "commits": commits, "ship": ship_info(repo),
+        "changelog": changelog(repo, ahead, staged),
     }
 
 

@@ -32,7 +32,11 @@ border-color=#dc322f
 
 # misra's power alerts carry a chart (small multiples of the sensors, the last two
 # hours): a wider card with the chart under the text at full width.
+# Hidden for now (2026-10-25: not worth the screen, and critical ones never timed
+# out): misra still records every alert and snapshot; `makoctl history` keeps the
+# cards. Drop invisible=1 to see them again.
 [app-name=misra]
+invisible=1
 width=400
 # room for the text and the chart (mako's default cap is 100 px)
 height=400
