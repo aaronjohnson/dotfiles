@@ -33,6 +33,7 @@ Scope {
     // Kept across openings (until quickshell restarts), so a failure is still there
     // when you come back. { t: "HH:MM", state: ok|bad|info, label, repo, detail }
     property var log: []
+    property string lastSystem: ""
     function note(state, label, repo, detail) {
         const t = new Date().toTimeString().slice(0, 5);
         log = log.concat([{ t: t, state: state, label: label, repo: repo, detail: detail || "" }]).slice(-40);
@@ -190,6 +191,10 @@ Scope {
             onStreamFinished: {
                 try { deck.data = JSON.parse(this.text); } catch (e) {}
                 deck.loading = false;
+                // the running system, logged when it changes (and on the first read)
+                const sys = deck.data.system || {};
+                const said = "generation " + (sys.generation || "?") + " · ~/nixos " + (sys.head || "");
+                if (said !== deck.lastSystem) { deck.lastSystem = said; deck.note("info", "System", "system", said); }
             }
         }
     }
@@ -357,58 +362,12 @@ Scope {
                 }
 
                 // ---- system strip ----
-                Row {
+                // The system strip's pills (generation, the switch check, Switch now) became
+                // log entries, lower right; Switch is a step in the queue. This keeps the anchor.
+                Item {
                     id: strip
                     anchors { top: parent.top; left: parent.left; right: parent.right; margins: 24; topMargin: 34 }
-                    spacing: 10
-                    height: 26
-
-                    Text {
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: "SYSTEM"
-                        color: deck.theme.violet
-                        font.pixelSize: 12; font.bold: true; font.letterSpacing: 1.5
-                    }
-                    Chip {
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: "generation " + (deck.data.system.generation || "?")
-                        tone: deck.theme.dim
-                    }
-                    Text {
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: "~/nixos " + (deck.data.system.head || "")
-                        color: deck.theme.fg
-                        font.pixelSize: 13
-                        elide: Text.ElideRight
-                        width: Math.min(implicitWidth, strip.width * 0.45)
-                    }
-                    Chip {
-                        anchors.verticalCenter: parent.verticalCenter
-                        visible: deck.switchState !== ""
-                        text: deck.switchState === "checking" ? "building to compare…"
-                            : deck.switchState === "same" ? "running = ~/nixos ✓"
-                            : deck.switchState === "broken" ? "~/nixos doesn't build ✗"
-                            : "~/nixos differs from running"
-                        tone: deck.switchState === "same" ? deck.theme.green
-                            : deck.switchState === "broken" ? deck.theme.red : deck.theme.yellow
-                    }
-                    Chip {
-                        anchors.verticalCenter: parent.verticalCenter
-                        visible: deck.switchState === "differs"
-                        text: deck.busyRepo === "system" ? "switching…" : "Switch now"
-                        tone: deck.theme.violet
-                        filled: true
-                        action: true
-                        enabledAction: deck.idle
-                        onClicked: deck.run("system", "Switch", [deck.land, "switch"])
-                    }
-                    Text {
-                        anchors.verticalCenter: parent.verticalCenter
-                        visible: false     // results are in the log
-                        text: deck.results["system"] ? (deck.results["system"].ok ? "✓ " : "✗ ") + deck.results["system"].line.slice(0, 80) : ""
-                        color: deck.results["system"] && deck.results["system"].ok ? deck.theme.green : deck.theme.red
-                        font.pixelSize: 12
-                    }
+                    height: 0
                 }
 
                 // ---- NEXT: the y/N question, as a tab on the top border, centred ----
