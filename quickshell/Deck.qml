@@ -27,6 +27,16 @@ Scope {
     property string busyRepo: ""          // repo path, or "system"
     property string busyLabel: ""
     property string busyLine: ""
+    property string busyErr: ""           // the last line that looks like the reason, for the log
+
+    // ---- the log, lower right: every message the deck has, newest last ----
+    // Kept across openings (until quickshell restarts), so a failure is still there
+    // when you come back. { t: "HH:MM", state: ok|bad|info, label, repo, detail }
+    property var log: []
+    function note(state, label, repo, detail) {
+        const t = new Date().toTimeString().slice(0, 5);
+        log = log.concat([{ t: t, state: state, label: label, repo: repo, detail: detail || "" }]).slice(-40);
+    }
     // last result per repo path: { ok, label, line }
     property var results: ({})
 
@@ -146,7 +156,12 @@ Scope {
     function all() { if (!idle || !nextStep || needsLogin) return; auto = true; yes(); }
     function autoNext() {
         if (!auto || !idle || switchState === "checking") return;
-        if (!nextStep || needsLogin) { auto = false; return; }
+        if (!nextStep || needsLogin) {
+            auto = false;
+            if (!nextStep) note(done.every(d => d.ok) ? "ok" : "bad", "A", "all",
+                                done.filter(d => d.ok).length + " of " + done.length + " steps done, nothing left");
+            return;
+        }
         if (done.some(d => d.key === nextStep.key)) { auto = false; return; }
         yes();
     }
@@ -157,7 +172,7 @@ Scope {
 
     function run(repo, label, args) {
         if (!idle) return;
-        busyRepo = repo; busyLabel = label; busyLine = "";
+        busyRepo = repo; busyLabel = label; busyLine = ""; busyErr = "";
         actionProc.command = ["env", "LAND_YES=1"].concat(args);
         actionProc.running = true;
     }
@@ -182,7 +197,12 @@ Scope {
     Process {
         id: switchProc
         command: [deck.land, "needs-switch"]
-        onExited: (code) => deck.switchState = code === 0 ? "differs" : code === 1 ? "same" : "broken"
+        onExited: (code) => {
+            deck.switchState = code === 0 ? "differs" : code === 1 ? "same" : "broken";
+            deck.note(code === 1 ? "ok" : code === 0 ? "info" : "bad", "Check", "system",
+                      code === 1 ? "running = ~/nixos" : code === 0 ? "~/nixos differs from the running system"
+                      : "~/nixos doesn't build (see " + "$XDG_RUNTIME_DIR/land-build.log)");
+        }
     }
 
     Process {
@@ -191,16 +211,22 @@ Scope {
             onRead: line => {
                 const clean = line.replace(/\x1b\[[0-9;]*m/g, "").trim();
                 if (clean) deck.busyLine = clean;
+                if (/error|fail|denied|✗/i.test(clean)) deck.busyErr = clean;
             }
         }
         stderr: SplitParser {
             onRead: line => {
                 const clean = line.replace(/\x1b\[[0-9;]*m/g, "").trim();
                 if (clean) deck.busyLine = clean;
+                if (/error|fail|denied|✗/i.test(clean)) deck.busyErr = clean;
             }
         }
         onExited: (code) => {
             deck.setResult(deck.busyRepo, code === 0, deck.busyLabel, deck.busyLine);
+            // a failure logs its most telling line (e.g. "the following units failed: …"),
+            // not the generic last one ("returned non-zero exit status 4")
+            deck.note(code === 0 ? "ok" : "bad", deck.busyLabel, deck.busyRepo,
+                      code === 0 ? deck.busyLine : (deck.busyErr || deck.busyLine));
             if (deck.runningStep)
                 deck.done = deck.done.concat([{ key: deck.runningStep.key, label: deck.runningStep.label,
                                                 repo: deck.runningStep.repo, ok: code === 0, line: deck.busyLine }]);
@@ -210,6 +236,7 @@ Scope {
             const login = /run `([^`]+)`/.exec(deck.busyLine);
             deck.loginCmd = code !== 0 && login ? login[1] : "";
             deck.needsLogin = deck.loginCmd ? deck.busyLabel + " needs a login" : "";
+            if (deck.loginCmd) deck.note("bad", "Log in", deck.busyRepo, deck.needsLogin + ": " + deck.loginCmd + " (Y or Log in)");
             const wasSwitch = deck.busyRepo === "system";
             deck.busyRepo = "";
             deck.refresh();
@@ -368,7 +395,7 @@ Scope {
                     Chip {
                         anchors.verticalCenter: parent.verticalCenter
                         visible: deck.switchState === "differs"
-                        text: deck.busyRepo === "system" ? "switching… " + deck.busyLine.slice(0, 60) : "Switch now"
+                        text: deck.busyRepo === "system" ? "switching…" : "Switch now"
                         tone: deck.theme.violet
                         filled: true
                         action: true
@@ -377,7 +404,7 @@ Scope {
                     }
                     Text {
                         anchors.verticalCenter: parent.verticalCenter
-                        visible: deck.results["system"] !== undefined
+                        visible: false     // results are in the log
                         text: deck.results["system"] ? (deck.results["system"].ok ? "✓ " : "✗ ") + deck.results["system"].line.slice(0, 80) : ""
                         color: deck.results["system"] && deck.results["system"].ok ? deck.theme.green : deck.theme.red
                         font.pixelSize: 12
@@ -412,14 +439,12 @@ Scope {
                         }
                         Text {
                             anchors.verticalCenter: parent.verticalCenter
-                            text: deck.busyRepo !== "" ? deck.busyLabel + " · " + deck.busyLine
-                                : deck.needsLogin ? deck.needsLogin
-                                : deck.loading ? "reading repos…"
+                            // only the question lives here; every message goes to the log, lower right
+                            text: deck.busyRepo !== "" ? deck.busyLabel + " " + onDeck.repoName(deck.busyRepo) + "…"
+                                : deck.needsLogin ? "Log in?"
+                                : deck.loading || deck.switchState === "checking" ? "…"
                                 : deck.nextStep ? deck.nextStep.ask
-                                : deck.switchState === "checking" ? "checking whether a switch is needed…"
-                                : deck.done.length ? deck.done.filter(d => d.ok).length + " of " + deck.done.length
-                                  + " steps done" + (deck.done.every(d => d.ok) ? " ✓ nothing left" : " ✗ see below")
-                                : "Nothing left to land or ship"
+                                : "Nothing left"
                             color: deck.theme.surface
                             font.pixelSize: 16; font.bold: true
                             elide: Text.ElideRight
@@ -462,7 +487,7 @@ Scope {
                     anchors { top: strip.bottom; topMargin: 6; horizontalCenter: parent.horizontalCenter }
                     width: Math.min(implicitWidth, panel.width * 0.7)
                     height: visible ? implicitHeight : 0
-                    visible: !!deck.nextStep && deck.busyRepo === ""
+                    visible: false     // the step's detail is in the log now
                     horizontalAlignment: Text.AlignHCenter
                     text: deck.nextStep ? deck.nextStep.detail
                           + (deck.pending.length > 1 ? "   ·   " + (deck.pending.length - 1) + " more after this" : "") : ""
@@ -568,19 +593,20 @@ Scope {
                     anchors { right: parent.right; bottom: parent.bottom; margins: 16; bottomMargin: 22 }
                     width: panel.width * 0.22
                     height: visible ? qCol.implicitHeight + 20 : 0
-                    visible: deck.done.length + deck.pending.length > 0
+                    visible: deck.log.length + deck.pending.length > 0
                     radius: 8
                     color: deck.theme.bg
                     opacity: 0.92
                     border.width: 1
                     border.color: deck.auto ? deck.theme.violet : deck.theme.muted
 
-                    readonly property var rows: deck.done.map(d => ({ state: d.ok ? "ok" : "bad", label: d.label, repo: d.repo, detail: d.line }))
+                    // the log (past), then the queue: the step running or next, and the rest
+                    readonly property var rows: deck.log
                         .concat(deck.pending.map((s, i) => ({
-                            state: i === 0 ? (deck.busyRepo !== "" ? "running" : "next") : "later",
+                            t: "", state: i === 0 ? (deck.busyRepo !== "" ? "running" : "next") : "later",
                             label: s.label, repo: s.repo,
                             detail: i === 0 && deck.busyRepo !== "" ? deck.busyLine : s.detail })))
-                    function repoName(path) { return path === "system" ? "system" : path.split("/").pop(); }
+                    function repoName(path) { return path === "system" || path === "all" ? path : path.split("/").pop(); }
 
                     Column {
                         id: qCol
@@ -589,33 +615,40 @@ Scope {
                         Row {
                             spacing: 8
                             Text {
-                                text: "ON DECK"
+                                text: "LOG · ON DECK"
                                 color: deck.theme.violet
                                 font.pixelSize: 12; font.bold: true; font.letterSpacing: 1.5
                             }
                             Text {
-                                text: deck.done.length + " done · " + deck.pending.length + " to go" + (deck.auto ? " · A running" : "")
+                                text: (deck.loading ? "reading repos · " : "") + (deck.switchState === "checking" ? "checking switch · " : "")
+                                      + deck.pending.length + " to go" + (deck.auto ? " · A running" : "")
                                 color: deck.theme.dim
                                 font.pixelSize: 11
                             }
                         }
                         Repeater {
-                            model: onDeck.rows.slice(-14)     // the newest 14: what's next stays in view
+                            model: onDeck.rows.slice(-18)     // the newest 18: what's next stays in view
                             Row {
                                 required property var modelData
                                 readonly property color tone: modelData.state === "ok" ? deck.theme.green
                                     : modelData.state === "bad" ? deck.theme.red
-                                    : modelData.state === "later" ? deck.theme.muted : deck.theme.violet
+                                    : modelData.state === "later" || modelData.state === "info" ? deck.theme.muted : deck.theme.violet
                                 width: qCol.width
-                                height: 17
+                                height: Math.max(17, detailText.implicitHeight)   // a failure wraps to show its reason
                                 spacing: 6
                                 Rectangle {     // a bar marks the row A is on
                                     width: 3; height: parent.height
                                     color: modelData.state === "next" || modelData.state === "running" ? deck.theme.violet : "transparent"
                                 }
                                 Text {
+                                    width: 32
+                                    text: modelData.t
+                                    color: deck.theme.muted
+                                    font.pixelSize: 10; font.family: "monospace"
+                                }
+                                Text {
                                     width: 14
-                                    text: ({ ok: "✓", bad: "✗", running: "⟳", next: "▶", later: "·" })[modelData.state]
+                                    text: ({ ok: "✓", bad: "✗", info: "•", running: "⟳", next: "▶", later: "·" })[modelData.state]
                                     color: parent.tone
                                     font.pixelSize: 12; font.bold: true
                                 }
@@ -634,9 +667,13 @@ Scope {
                                     elide: Text.ElideRight
                                 }
                                 Text {
-                                    width: parent.width - 3 - 14 - 78 - 88 - 4 * 6
+                                    id: detailText
+                                    width: parent.width - 3 - 32 - 14 - 78 - 88 - 5 * 6
+                                    wrapMode: modelData.state === "bad" ? Text.Wrap : Text.NoWrap
+                                    maximumLineCount: modelData.state === "bad" ? 3 : 1
                                     text: modelData.detail || ""
-                                    color: modelData.state === "later" ? deck.theme.muted : deck.theme.dim
+                                    color: modelData.state === "bad" ? deck.theme.red
+                                         : modelData.state === "later" ? deck.theme.muted : deck.theme.dim
                                     font.pixelSize: 11
                                     font.family: modelData.state === "running" ? "monospace" : Qt.application.font.family
                                     elide: Text.ElideRight
