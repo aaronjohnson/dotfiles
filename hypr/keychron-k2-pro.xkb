@@ -1,0 +1,19 @@
+// Keychron K2 Pro (US ANSI) on Linux, while its side switch stays in Mac mode for
+// the Mac / ChromeOS / Android it also serves. Used by hyprland.lua (kb_file) for
+// the Keychron's devices only; the Framework's built-in keyboard stays JP.
+//
+// US layout, Caps Lock as Ctrl (as on the laptop). The Mac-mode top row is turned
+// into F1-F12 by a udev hwdb rule in ~/nixos/configuration.nix, not here: its
+// brightness/volume keys come from an interface Hyprland treats as a mouse, which
+// per-keyboard keymaps don't reach.
+//
+// Check after editing:  xkbcli compile-keymap --keymap ~/dotfiles/hypr/keychron-k2-pro.xkb
+
+xkb_keymap {
+    xkb_keycodes { include "evdev+aliases(qwerty)" };
+    xkb_types    { include "complete" };
+    xkb_compat   { include "complete" };
+    xkb_symbols  {
+        include "pc+us+inet(evdev)+ctrl(nocaps)"
+    };
+};

@@ -1433,6 +1433,9 @@ ShellRoot {
     // Hold the power button for the power menu (PowerMenu.qml).
     PowerMenu { theme: root.c }
 
+    // Super+F2: shortcuts and window commands (KeysMenu.qml).
+    KeysMenu { theme: root.c }
+
     IpcHandler {
         target: "bar"
         function toggleAutoHide(): void { root.autoHide = !root.autoHide; }

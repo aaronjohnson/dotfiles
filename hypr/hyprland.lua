@@ -321,6 +321,22 @@ hl.device({
     sensitivity = -0.5,
 })
 
+-- Keychron K2 Pro (USB-C): a US keyboard, side switch left in Mac mode for the Mac,
+-- ChromeOS and Android. US layout, and its Mac media top row types F1-F12 so the
+-- Super+F binds work without Fn. Details in keychron-k2-pro.xkb. It shows up as four
+-- devices; media keys come from consumer-control, so all four get the same keymap.
+for _, dev in ipairs({
+    "keychron-keychron-k2-pro",
+    "keychron-keychron-k2-pro-keyboard",
+    "keychron-keychron-k2-pro-consumer-control",
+    "keychron-keychron-k2-pro-system-control",
+}) do
+    hl.device({
+        name    = dev,
+        kb_file = os.getenv("HOME") .. "/dotfiles/hypr/keychron-k2-pro.xkb",
+    })
+end
+
 
 ---------------------
 ---- KEYBINDINGS ----
@@ -329,12 +345,12 @@ hl.device({
 local mainMod = "SUPER" -- Sets "Windows" key as main modifier
 
 -- Example binds, see https://wiki.hypr.land/Configuring/Basics/Binds/ for more
-hl.bind(mainMod .. " + Q", hl.dsp.exec_cmd(terminal))
-local closeWindowBind = hl.bind(mainMod .. " + C", hl.dsp.window.close())
+hl.bind(mainMod .. " + Q", hl.dsp.exec_cmd(terminal), { description = "Apps: Terminal" })
+local closeWindowBind = hl.bind(mainMod .. " + C", hl.dsp.window.close(), { description = "Windows: Close window" })
 -- closeWindowBind:set_enabled(false)
-hl.bind(mainMod .. " + M", hl.dsp.exec_cmd("command -v hyprshutdown >/dev/null 2>&1 && hyprshutdown || hyprctl dispatch 'hl.dsp.exit()'"))
-hl.bind(mainMod .. " + E", hl.dsp.exec_cmd(fileManager))
-hl.bind(mainMod .. " + B", hl.dsp.exec_cmd("epiphany"))
+hl.bind(mainMod .. " + M", hl.dsp.exec_cmd("command -v hyprshutdown >/dev/null 2>&1 && hyprshutdown || hyprctl dispatch 'hl.dsp.exit()'"), { description = "Session: Log out of Hyprland" })
+hl.bind(mainMod .. " + E", hl.dsp.exec_cmd(fileManager), { description = "Apps: File manager" })
+hl.bind(mainMod .. " + B", hl.dsp.exec_cmd("epiphany"), { description = "Apps: Web browser" })
 
 -- Alt+C / Alt+V copy and paste in any window (Chromebook/Mac habit). Terminals use
 -- Ctrl+Shift+C/V for copy/paste, since Ctrl+C there means "interrupt".
@@ -345,84 +361,87 @@ local function clip(key)
         hl.dispatch(hl.dsp.send_shortcut({ mods = terminal and "CTRL SHIFT" or "CTRL", key = key }))
     end
 end
-hl.bind("ALT + C", clip("C"))
-hl.bind("ALT + V", clip("V"))
+hl.bind("ALT + C", clip("C"), { description = "Ours: Copy (in any window)" })
+hl.bind("ALT + V", clip("V"), { description = "Ours: Paste (in any window)" })
 
 -- Super+F1: Claude Code in a new terminal.
-hl.bind(mainMod .. " + F1", hl.dsp.exec_cmd(terminal .. " --title Claude claude"))
+hl.bind(mainMod .. " + F1", hl.dsp.exec_cmd(terminal .. " --title Claude claude"), { description = "Ours: Claude Code" })
+
+-- Super+F2: shortcuts and window commands (quickshell KeysMenu.qml).
+hl.bind(mainMod .. " + F2", hl.dsp.exec_cmd("qs ipc call keys toggle"), { description = "Ours: This menu: shortcuts and window commands" })
 
 -- Super+F12: land changes: commit the drafted messages, push and bump ~/nixos, switch
 -- (password through polkit), in a small floating window, with mako notifications.
-hl.bind(mainMod .. " + F12", hl.dsp.exec_cmd("kitty --class land -o background_opacity=0.85 --title 'Land' -e ~/dotfiles/bin/land"))
+hl.bind(mainMod .. " + F12", hl.dsp.exec_cmd("kitty --class land -o background_opacity=0.85 --title 'Land' -e ~/dotfiles/bin/land"), { description = "Ours: Land: commit drafts, switch NixOS" })
 -- Super+F11: ship: deploy what changed since the last ship, per repo .ship file, asking first
-hl.bind(mainMod .. " + F11", hl.dsp.exec_cmd("kitty --class land -o background_opacity=0.85 --title 'Ship' -e ~/dotfiles/bin/ship"))
+hl.bind(mainMod .. " + F11", hl.dsp.exec_cmd("kitty --class land -o background_opacity=0.85 --title 'Ship' -e ~/dotfiles/bin/ship"), { description = "Ours: Ship: deploy what changed" })
 
 -- Super+F9: screenshot of the screen; +Shift: drag a region; +Alt: the focused window.
 -- Saved to ~/Pictures/Screenshots and copied to the clipboard (hyprshot notifies).
 local shots = "~/Pictures/Screenshots"
-hl.bind(mainMod .. " + F9",         hl.dsp.exec_cmd("hyprshot -m output -m active -o " .. shots))
-hl.bind(mainMod .. " + SHIFT + F9", hl.dsp.exec_cmd("hyprshot -m region -o " .. shots))
-hl.bind(mainMod .. " + ALT + F9",   hl.dsp.exec_cmd("hyprshot -m window -m active -o " .. shots))
+hl.bind(mainMod .. " + F9",         hl.dsp.exec_cmd("hyprshot -m output -m active -o " .. shots), { description = "Ours: Screenshot of the screen" })
+hl.bind(mainMod .. " + SHIFT + F9", hl.dsp.exec_cmd("hyprshot -m region -o " .. shots), { description = "Ours: Screenshot of a region" })
+hl.bind(mainMod .. " + ALT + F9",   hl.dsp.exec_cmd("hyprshot -m window -m active -o " .. shots), { description = "Ours: Screenshot of the window" })
 
 -- Super+F8: auto-brightness (light sensor) on/off.
-hl.bind(mainMod .. " + F8", hl.dsp.exec_cmd("~/dotfiles/bin/auto-brightness toggle"))
+hl.bind(mainMod .. " + F8", hl.dsp.exec_cmd("~/dotfiles/bin/auto-brightness toggle"), { description = "Ours: Auto-brightness on/off" })
 
 -- Super+F10: dismiss all notifications.
-hl.bind(mainMod .. " + F10", hl.dsp.exec_cmd("makoctl dismiss --all"))
+hl.bind(mainMod .. " + F10", hl.dsp.exec_cmd("makoctl dismiss --all"), { description = "Ours: Dismiss notifications" })
 
 -- Super+F7: software privacy, built-in mic and camera off/on together (privacy-toggle in ~/nixos).
-hl.bind(mainMod .. " + F7", hl.dsp.exec_cmd("privacy-toggle"))
+hl.bind(mainMod .. " + F7", hl.dsp.exec_cmd("privacy-toggle"), { description = "Ours: Mic and camera privacy on/off" })
 -- Super+T: top bar autohide on/off (always visible, reserving its space, when off).
-hl.bind(mainMod .. " + T", hl.dsp.exec_cmd("qs ipc call bar toggleAutoHide"))
-hl.bind(mainMod .. " + L", hl.dsp.exec_cmd("loginctl lock-session"))  -- lock screen (hypridle runs hyprlock)
-hl.bind(mainMod .. " + V", hl.dsp.window.float({ action = "toggle" }))
-hl.bind(mainMod .. " + R", hl.dsp.exec_cmd(menu))
-hl.bind(mainMod .. " + P", hl.dsp.window.pseudo())
-hl.bind(mainMod .. " + J", hl.dsp.layout("togglesplit"))    -- dwindle only
+hl.bind(mainMod .. " + T", hl.dsp.exec_cmd("qs ipc call bar toggleAutoHide"), { description = "Ours: Bar auto-hide on/off" })
+hl.bind(mainMod .. " + L", hl.dsp.exec_cmd("loginctl lock-session"))  -- lock screen (hypridle runs hyprlock, { description = "Session: Lock screen" })
+hl.bind(mainMod .. " + V", hl.dsp.window.float({ action = "toggle" }), { description = "Windows: Float / tile" })
+hl.bind(mainMod .. " + R", hl.dsp.exec_cmd(menu), { description = "Apps: Launcher" })
+hl.bind(mainMod .. " + P", hl.dsp.window.pseudo(), { description = "Windows: Pseudo-tile" })
+hl.bind(mainMod .. " + J", hl.dsp.layout("togglesplit"), { description = "Windows: Flip split direction" })    -- dwindle only
 
 -- Move focus with mainMod + arrow keys
-hl.bind(mainMod .. " + left",  hl.dsp.focus({ direction = "left" }))
-hl.bind(mainMod .. " + right", hl.dsp.focus({ direction = "right" }))
-hl.bind(mainMod .. " + up",    hl.dsp.focus({ direction = "up" }))
-hl.bind(mainMod .. " + down",  hl.dsp.focus({ direction = "down" }))
+hl.bind(mainMod .. " + left",  hl.dsp.focus({ direction = "left" }), { description = "Windows: Focus left / right / up / down" })
+hl.bind(mainMod .. " + right", hl.dsp.focus({ direction = "right" }), { description = "Windows: Focus left / right / up / down" })
+hl.bind(mainMod .. " + up",    hl.dsp.focus({ direction = "up" }), { description = "Windows: Focus left / right / up / down" })
+hl.bind(mainMod .. " + down",  hl.dsp.focus({ direction = "down" }), { description = "Windows: Focus left / right / up / down" })
 
 -- Switch workspaces with mainMod + [0-9]
 -- Move active window to a workspace with mainMod + SHIFT + [0-9]
 for i = 1, 10 do
     local key = i % 10 -- 10 maps to key 0
-    hl.bind(mainMod .. " + " .. key,             hl.dsp.focus({ workspace = i}))
-    hl.bind(mainMod .. " + SHIFT + " .. key,     hl.dsp.window.move({ workspace = i }))
+    hl.bind(mainMod .. " + " .. key,             hl.dsp.focus({ workspace = i}), { description = "Workspaces: Go to workspace 1-10" })
+    hl.bind(mainMod .. " + SHIFT + " .. key,     hl.dsp.window.move({ workspace = i }), { description = "Workspaces: Move window to workspace 1-10" })
 end
 
 -- Example special workspace (scratchpad)
-hl.bind(mainMod .. " + S",         hl.dsp.workspace.toggle_special("magic"))
-hl.bind(mainMod .. " + SHIFT + S", hl.dsp.window.move({ workspace = "special:magic" }))
+hl.bind(mainMod .. " + S",         hl.dsp.workspace.toggle_special("magic"), { description = "Workspaces: Scratchpad show/hide" })
+hl.bind(mainMod .. " + SHIFT + S", hl.dsp.window.move({ workspace = "special:magic" }), { description = "Workspaces: Move window to scratchpad" })
 
 -- Scroll through existing workspaces with mainMod + scroll
-hl.bind(mainMod .. " + mouse_down", hl.dsp.focus({ workspace = "e+1" }))
-hl.bind(mainMod .. " + mouse_up",   hl.dsp.focus({ workspace = "e-1" }))
+hl.bind(mainMod .. " + mouse_down", hl.dsp.focus({ workspace = "e+1" }), { description = "Workspaces: Next / previous workspace" })
+hl.bind(mainMod .. " + mouse_up",   hl.dsp.focus({ workspace = "e-1" }), { description = "Workspaces: Next / previous workspace" })
 
 -- Move/resize windows with mainMod + LMB/RMB and dragging
-hl.bind(mainMod .. " + mouse:272", hl.dsp.window.drag(),   { mouse = true })
-hl.bind(mainMod .. " + mouse:273", hl.dsp.window.resize(), { mouse = true })
+hl.bind(mainMod .. " + mouse:272", hl.dsp.window.drag(),   { mouse = true, description = "Windows: Drag to move" })
+hl.bind(mainMod .. " + mouse:273", hl.dsp.window.resize(), { mouse = true, description = "Windows: Drag to resize" })
 
 -- Laptop multimedia keys for volume and LCD brightness
-hl.bind("XF86AudioRaiseVolume", hl.dsp.exec_cmd("wpctl set-volume -l 1 @DEFAULT_AUDIO_SINK@ 5%+"), { locked = true, repeating = true })
-hl.bind("XF86AudioLowerVolume", hl.dsp.exec_cmd("wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-"),      { locked = true, repeating = true })
-hl.bind("XF86AudioMute",        hl.dsp.exec_cmd("wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"),     { locked = true, repeating = true })
-hl.bind("XF86AudioMicMute",     hl.dsp.exec_cmd("wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle"),   { locked = true, repeating = true })
-hl.bind("XF86MonBrightnessUp",  hl.dsp.exec_cmd("brightnessctl -e4 -n2 set 5%+"),                  { locked = true, repeating = true })
-hl.bind("XF86MonBrightnessDown",hl.dsp.exec_cmd("brightnessctl -e4 -n2 set 5%-"),                  { locked = true, repeating = true })
+hl.bind("XF86AudioRaiseVolume", hl.dsp.exec_cmd("wpctl set-volume -l 1 @DEFAULT_AUDIO_SINK@ 5%+"), { locked = true, repeating = true, description = "Media: Volume up / down" })
+hl.bind("XF86AudioLowerVolume", hl.dsp.exec_cmd("wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-"),      { locked = true, repeating = true, description = "Media: Volume up / down" })
+hl.bind("XF86AudioMute",        hl.dsp.exec_cmd("wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"),     { locked = true, repeating = true, description = "Media: Mute" })
+hl.bind("XF86AudioMicMute",     hl.dsp.exec_cmd("wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle"),   { locked = true, repeating = true, description = "Media: Mute microphone" })
+hl.bind("XF86MonBrightnessUp",  hl.dsp.exec_cmd("brightnessctl -e4 -n2 set 5%+"),                  { locked = true, repeating = true, description = "Media: Brightness up / down" })
+hl.bind("XF86MonBrightnessDown",hl.dsp.exec_cmd("brightnessctl -e4 -n2 set 5%-"),                  { locked = true, repeating = true, description = "Media: Brightness up / down" })
 
 -- Requires playerctl
-hl.bind("XF86AudioNext",  hl.dsp.exec_cmd("playerctl next"),       { locked = true })
-hl.bind("XF86AudioPause", hl.dsp.exec_cmd("playerctl play-pause"), { locked = true })
-hl.bind("XF86AudioPlay",  hl.dsp.exec_cmd("playerctl play-pause"), { locked = true })
-hl.bind("XF86AudioPrev",  hl.dsp.exec_cmd("playerctl previous"),   { locked = true })
+hl.bind("XF86AudioNext",  hl.dsp.exec_cmd("playerctl next"),       { locked = true, description = "Media: Next / previous track" })
+hl.bind("XF86AudioPause", hl.dsp.exec_cmd("playerctl play-pause"), { locked = true, description = "Media: Play / pause" })
+hl.bind("XF86AudioPlay",  hl.dsp.exec_cmd("playerctl play-pause"), { locked = true, description = "Media: Play / pause" })
+hl.bind("XF86AudioPrev",  hl.dsp.exec_cmd("playerctl previous"),   { locked = true, description = "Media: Next / previous track" })
 
 -- Power button: tap to lock, hold for the power menu (logind ignores the key, see
 -- ~/nixos/power.nix). Not locked: on the lock screen the button does nothing.
-hl.bind("XF86PowerOff", hl.dsp.exec_cmd("~/dotfiles/bin/power-button down"))
+hl.bind("XF86PowerOff", hl.dsp.exec_cmd("~/dotfiles/bin/power-button down"), { description = "Ours: Power: tap locks, hold opens the power menu" })
 hl.bind("XF86PowerOff", hl.dsp.exec_cmd("~/dotfiles/bin/power-button up"), { release = true })
 
 
