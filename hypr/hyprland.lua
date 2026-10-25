@@ -415,6 +415,11 @@ hl.bind("XF86AudioPause", hl.dsp.exec_cmd("playerctl play-pause"), { locked = tr
 hl.bind("XF86AudioPlay",  hl.dsp.exec_cmd("playerctl play-pause"), { locked = true })
 hl.bind("XF86AudioPrev",  hl.dsp.exec_cmd("playerctl previous"),   { locked = true })
 
+-- Power button: tap to lock, hold for the power menu (logind ignores the key, see
+-- ~/nixos/power.nix). Not locked: on the lock screen the button does nothing.
+hl.bind("XF86PowerOff", hl.dsp.exec_cmd("~/dotfiles/bin/power-button down"))
+hl.bind("XF86PowerOff", hl.dsp.exec_cmd("~/dotfiles/bin/power-button up"), { release = true })
+
 
 --------------------------------
 ---- WINDOWS AND WORKSPACES ----

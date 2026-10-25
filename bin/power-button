@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Power button: a tap locks the screen, a hold opens the quickshell power menu.
+#
+# Hyprland runs this with "down" when the button is pressed and "up" when it is
+# released (binds in hypr/hyprland.lua); logind is told to ignore the key
+# (nixos/power.nix) so nothing else acts on it. On "down" a timer starts; if the
+# button is still held when it runs out, the menu opens. An "up" before then is
+# a tap. The firmware forces the laptop off after a 10 s hold, so keep the hold
+# time short.
+#
+#   power-button down|up
+#   POWER_BUTTON_HOLD=0.6   seconds that count as a hold
+set -u
+
+hold=${POWER_BUTTON_HOLD:-0.6}
+state=${XDG_RUNTIME_DIR:-/tmp}/power-button    # this press's token, or "held"
+
+# The timer and the release can land at the same moment, so both read and
+# change the state under a lock.
+exec 9>>"$state.lock"
+
+case ${1:-} in
+  down)
+    token="$$.$(date +%s%N)"
+    flock 9; echo "$token" > "$state"; flock -u 9
+    (
+      sleep "$hold"
+      flock 9
+      if [ "$(cat "$state" 2>/dev/null)" = "$token" ]; then
+        echo held > "$state"
+        flock -u 9
+        qs ipc call powermenu open
+      fi
+    ) &
+    ;;
+  up)
+    flock 9; s=$(cat "$state" 2>/dev/null); rm -f "$state"; flock -u 9
+    # A hold has already opened the menu. Anything else (including an "up" whose
+    # "down" went missing) is a tap.
+    if [ "$s" != held ]; then
+      qs ipc call powermenu close >/dev/null 2>&1
+      loginctl lock-session
+    fi
+    ;;
+  *)
+    echo "usage: power-button down|up" >&2
+    exit 2
+    ;;
+esac

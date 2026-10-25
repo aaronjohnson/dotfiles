@@ -1430,6 +1430,9 @@ ShellRoot {
     // (`qs ipc call bar toggleAutoHide`).
     property bool autoHide: true
 
+    // Hold the power button for the power menu (PowerMenu.qml).
+    PowerMenu { theme: root.c }
+
     IpcHandler {
         target: "bar"
         function toggleAutoHide(): void { root.autoHide = !root.autoHide; }
