@@ -1436,6 +1436,9 @@ ShellRoot {
     // Super+F2: shortcuts and window commands (KeysMenu.qml).
     KeysMenu { theme: root.c }
 
+    // Password prompts for pkexec etc.: quickshell is the polkit agent (PolkitPrompt.qml).
+    PolkitPrompt { theme: root.c }
+
     IpcHandler {
         target: "bar"
         function toggleAutoHide(): void { root.autoHide = !root.autoHide; }
