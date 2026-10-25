@@ -82,6 +82,39 @@ Scope {
     readonly property var pending: plan.filter(s => !skipped[s.key])
     readonly property var nextStep: pending.length ? pending[0] : null
 
+    // ---- layout: hot repos big in the middle, the rest compact on the sides by subject ----
+    // (hot = something to do, or worked on in the last two days; groups from
+    // ~/.config/deck/groups.txt via deck-status.) Groups alternate sides, biggest first, so
+    // the two columns come out about the same height.
+    readonly property var hotRepos: {
+        const hot = (data.repos || []).filter(r => r.hot);
+        return hot.length ? hot : (data.repos || []).slice(0, 3);
+    }
+    readonly property var coolGroups: {
+        const byName = {};
+        const order = [];
+        for (const r of (data.repos || [])) {
+            if (hotRepos.indexOf(r) >= 0) continue;
+            if (!byName[r.group]) { byName[r.group] = { name: r.group, order: r.group_order, repos: [] }; order.push(r.group); }
+            byName[r.group].repos.push(r);
+        }
+        return order.map(n => byName[n]).sort((a, b) => a.order - b.order);
+    }
+    readonly property var sides: {
+        const left = [], right = [];
+        let lh = 0, rh = 0;
+        // weigh a group by what it will show (a header, a tile each, and their commit lines),
+        // not by its repo count: a repo with one commit is a short tile
+        const weight = g => 1 + g.repos.reduce((s, r) => s + 1 + Math.min(r.commits.length, 12) / 4, 0);
+        for (const g of coolGroups.slice().sort((a, b) => weight(b) - weight(a))) {
+            const h = weight(g);
+            if (lh <= rh) { left.push(g); lh += h; } else { right.push(g); rh += h; }
+        }
+        const byOrder = (a, b) => a.order - b.order;
+        const rows = gs => gs.reduce((s, g) => s + 1 + g.repos.length, 0);   // headers + tiles
+        return { left: left.sort(byOrder), right: right.sort(byOrder), leftRows: rows(left), rightRows: rows(right) };
+    }
+
     function yes() { if (idle && nextStep) run(nextStep.repo, nextStep.label, nextStep.args); }
     function no() {
         if (!nextStep) return;
@@ -251,7 +284,7 @@ Scope {
                 // ---- system strip ----
                 Row {
                     id: strip
-                    anchors { top: parent.top; left: parent.left; right: parent.right; margins: 24; topMargin: 30 }
+                    anchors { top: parent.top; left: parent.left; right: parent.right; margins: 24; topMargin: 34 }
                     spacing: 10
                     height: 26
 
@@ -303,24 +336,30 @@ Scope {
                     }
                 }
 
-                // ---- NEXT: the y/N question ----
+                // ---- NEXT: the y/N question, as a tab on the top border, centred ----
+                // Where the eye lands when the deck opens; the title tab sits at the left.
                 Rectangle {
-                    id: nextBar
-                    anchors { top: strip.bottom; topMargin: 10; left: parent.left; right: parent.right; leftMargin: 18; rightMargin: 18 }
+                    id: askTab
+                    z: 20
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    y: -height / 2
                     height: 40
-                    radius: 6
-                    color: deck.theme.bg
+                    width: askRow.width + 36
+                    radius: 8
+                    color: deck.nextStep || deck.busyRepo !== "" ? deck.theme.violet : deck.theme.green
                     border.width: 1
-                    border.color: deck.nextStep ? deck.theme.violet : deck.theme.green
+                    border.color: deck.theme.dim
 
                     Row {
-                        anchors { left: parent.left; leftMargin: 12; verticalCenter: parent.verticalCenter }
+                        id: askRow
+                        anchors.centerIn: parent
                         spacing: 12
                         Text {
                             anchors.verticalCenter: parent.verticalCenter
                             text: deck.busyRepo !== "" ? "RUNNING" : deck.nextStep ? "NEXT" : "DONE"
-                            color: deck.nextStep || deck.busyRepo !== "" ? deck.theme.violet : deck.theme.green
-                            font.pixelSize: 12; font.bold: true; font.letterSpacing: 1.5
+                            color: deck.theme.surface
+                            opacity: 0.85
+                            font.pixelSize: 12; font.bold: true; font.letterSpacing: 2
                         }
                         Text {
                             anchors.verticalCenter: parent.verticalCenter
@@ -328,45 +367,42 @@ Scope {
                                 : deck.loading ? "reading repos…"
                                 : deck.nextStep ? deck.nextStep.ask
                                 : deck.switchState === "checking" ? "checking whether a switch is needed…"
-                                : "Nothing left to land or ship."
-                            color: deck.theme.fg
-                            font.pixelSize: 15; font.bold: !!deck.nextStep
+                                : "Nothing left to land or ship"
+                            color: deck.theme.surface
+                            font.pixelSize: 16; font.bold: true
                             elide: Text.ElideRight
-                            width: Math.min(implicitWidth, nextBar.width * 0.5)
-                        }
-                        Text {
-                            anchors.verticalCenter: parent.verticalCenter
-                            visible: !!deck.nextStep && deck.busyRepo === ""
-                            text: deck.nextStep ? deck.nextStep.detail : ""
-                            color: deck.theme.dim
-                            font.pixelSize: 12
-                            elide: Text.ElideRight
-                            width: Math.min(implicitWidth, nextBar.width * 0.28)
-                        }
-                    }
-                    Row {
-                        anchors { right: parent.right; rightMargin: 10; verticalCenter: parent.verticalCenter }
-                        spacing: 8
-                        visible: !!deck.nextStep
-                        Text {
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: deck.pending.length > 1 ? (deck.pending.length - 1) + " more after this" : ""
-                            color: deck.theme.muted
-                            font.pixelSize: 11
+                            width: Math.min(implicitWidth, panel.width * 0.45)
                         }
                         Chip {
+                            visible: !!deck.nextStep
                             anchors.verticalCenter: parent.verticalCenter
-                            text: "Y  yes"; tone: deck.theme.violet; filled: true; action: true
+                            text: "Y  yes"; tone: deck.theme.surface; filled: true; action: true
                             enabledAction: deck.idle
                             onClicked: deck.yes()
                         }
                         Chip {
+                            visible: !!deck.nextStep
                             anchors.verticalCenter: parent.verticalCenter
-                            text: "N  skip"; tone: deck.theme.dim; action: true
+                            text: "N  skip"; tone: deck.theme.surface; action: true
                             enabledAction: deck.idle
                             onClicked: deck.no()
                         }
                     }
+                }
+
+                // quiet context under the tab: what the step is about, and how many follow
+                Text {
+                    id: nextBar
+                    anchors { top: strip.bottom; topMargin: 6; horizontalCenter: parent.horizontalCenter }
+                    width: Math.min(implicitWidth, panel.width * 0.7)
+                    height: visible ? implicitHeight : 0
+                    visible: !!deck.nextStep && deck.busyRepo === ""
+                    horizontalAlignment: Text.AlignHCenter
+                    text: deck.nextStep ? deck.nextStep.detail
+                          + (deck.pending.length > 1 ? "   ·   " + (deck.pending.length - 1) + " more after this" : "") : ""
+                    color: deck.theme.dim
+                    font.pixelSize: 12
+                    elide: Text.ElideRight
                 }
 
                 Rectangle {
@@ -375,58 +411,142 @@ Scope {
                     height: 1; color: deck.theme.muted; opacity: 0.4
                 }
 
-                // ---- timeline (right) ----
-                Rectangle {
-                    id: timeline
-                    anchors { top: rule.bottom; bottom: parent.bottom; right: parent.right; margins: 16; bottomMargin: 22 }
-                    width: Math.max(360, panel.width * 0.24)
-                    radius: 8
-                    color: deck.theme.bg
-                    opacity: 0.92
+                // ---- the quieter repos: compact tiles by subject, left and right ----
+                component SideColumn: Column {
+                    id: side
+                    required property var groupsHere
+                    required property int rowsHere     // tiles + headers, for sharing the height
+                    spacing: 6
+                    // spare height goes to recent commits inside each compact tile
+                    readonly property int tiles: Math.max(1, rowsHere - groupsHere.length)
+                    readonly property int extraLines: Math.max(0, Math.floor((height - rowsHere * 64) / tiles / 15))
 
-                    Column {
-                        id: tlCol
-                        anchors { fill: parent; margins: 14 }
-                        spacing: 6
-                        Text {
-                            text: "RECENT COMMITS · 2 WEEKS"
-                            color: deck.theme.violet
-                            font.pixelSize: 12; font.bold: true; font.letterSpacing: 1.5
-                        }
-                        Repeater {
-                            // as many as fit, so the column is full but never scrolls
-                            model: deck.data.timeline.slice(0, Math.max(0, Math.floor((tlCol.height - 24) / 40)))
-                            Column {
-                                required property var modelData
-                                width: tlCol.width
-                                spacing: 1
-                                Row {
-                                    spacing: 6
-                                    Text { text: modelData.repo; color: deck.theme.cyan; font.pixelSize: 11; font.bold: true }
-                                    Text { text: modelData.hash; color: deck.theme.yellow; font.family: "monospace"; font.pixelSize: 11 }
-                                    Text { text: modelData.ago; color: deck.theme.muted; font.pixelSize: 11 }
-                                }
-                                Text {
-                                    width: parent.width
-                                    text: modelData.subject
-                                    color: deck.theme.fg
-                                    font.pixelSize: 12
-                                    elide: Text.ElideRight
+                    Repeater {
+                        model: side.groupsHere
+                        Column {
+                            required property var modelData
+                            width: side.width
+                            spacing: 5
+                            Text {
+                                text: modelData.name.toUpperCase()
+                                color: deck.theme.violet
+                                font.pixelSize: 11; font.bold: true; font.letterSpacing: 1.5
+                                topPadding: 4
+                            }
+                            Repeater {
+                                model: modelData.repos
+                                Rectangle {
+                                    required property var modelData
+                                    readonly property var r: modelData
+                                    width: side.width
+                                    height: compact.implicitHeight + 14
+                                    radius: 6
+                                    color: "transparent"
+                                    border.width: 1
+                                    border.color: deck.theme.muted
+                                    Column {
+                                        id: compact
+                                        anchors { top: parent.top; left: parent.left; right: parent.right; margins: 8; topMargin: 7 }
+                                        spacing: 3
+                                        Row {
+                                            spacing: 6
+                                            Text { text: r.name; color: deck.theme.fg; font.pixelSize: 13; font.bold: true }
+                                            Chip { text: r.branch; tone: deck.theme.cyan; height: 18 }
+                                            Chip { visible: (r.dirty || 0) > 0; text: r.dirty + " unstaged"; tone: deck.theme.muted; height: 18 }
+                                            Chip { visible: !!r.input; text: "flake input"; tone: deck.theme.violet; height: 18 }
+                                        }
+                                        Repeater {
+                                            model: r.commits.slice(0, 1 + side.extraLines)
+                                            Row {
+                                                required property var modelData
+                                                spacing: 6
+                                                Text { text: modelData.hash; color: deck.theme.yellow; font.family: "monospace"; font.pixelSize: 11 }
+                                                Text {
+                                                    width: side.width - 110
+                                                    text: modelData.subject
+                                                    color: deck.theme.dim
+                                                    font.pixelSize: 11
+                                                    elide: Text.ElideRight
+                                                }
+                                                Text { text: modelData.ago; color: deck.theme.muted; font.pixelSize: 11 }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
                 }
 
-                // ---- tiles (left) ----
+                SideColumn {
+                    id: leftSide
+                    anchors { top: rule.bottom; bottom: parent.bottom; left: parent.left; margins: 16; bottomMargin: 22 }
+                    width: panel.width * 0.22
+                    groupsHere: deck.sides.left
+                    rowsHere: deck.sides.leftRows
+                }
+                SideColumn {
+                    id: rightSide
+                    anchors { top: rule.bottom; bottom: parent.bottom; right: parent.right; margins: 16; bottomMargin: 22 }
+                    width: panel.width * 0.22
+                    groupsHere: deck.sides.right
+                    rowsHere: deck.sides.rightRows
+                }
+
+                // ---- timeline: under the hot tiles, in the middle ----
+                Rectangle {
+                    id: timeline
+                    anchors { bottom: parent.bottom; left: leftSide.right; right: rightSide.left; margins: 16; bottomMargin: 22 }
+                    height: (panel.height - rule.y) * 0.34
+                    radius: 8
+                    color: deck.theme.bg
+                    opacity: 0.92
+
+                    Text {
+                        id: tlHead
+                        anchors { top: parent.top; left: parent.left; margins: 12 }
+                        text: "RECENT COMMITS · 2 WEEKS"
+                        color: deck.theme.violet
+                        font.pixelSize: 12; font.bold: true; font.letterSpacing: 1.5
+                    }
+                    // two columns, as many entries as fit: full, never scrolls
+                    Flow {
+                        id: tlFlow
+                        anchors { top: tlHead.bottom; topMargin: 6; left: parent.left; right: parent.right; bottom: parent.bottom; margins: 12 }
+                        flow: Flow.TopToBottom
+                        spacing: 4
+                        readonly property int perCol: Math.max(1, Math.floor((height + 4) / 20))
+                        Repeater {
+                            model: deck.data.timeline.slice(0, tlFlow.perCol * 2)
+                            Row {
+                                required property var modelData
+                                width: tlFlow.width / 2 - 8
+                                height: 16
+                                spacing: 6
+                                Text { text: modelData.repo; color: deck.theme.cyan; font.pixelSize: 11; font.bold: true; width: 90; elide: Text.ElideRight }
+                                Text { text: modelData.hash; color: deck.theme.yellow; font.family: "monospace"; font.pixelSize: 11 }
+                                Text {
+                                    width: parent.width - 220
+                                    text: modelData.subject
+                                    color: deck.theme.fg
+                                    font.pixelSize: 11
+                                    elide: Text.ElideRight
+                                }
+                                Text { text: modelData.ago; color: deck.theme.muted; font.pixelSize: 11 }
+                            }
+                        }
+                    }
+                }
+
+                // ---- hot tiles: the middle, above the timeline ----
                 Item {
                     id: tilesArea
-                    anchors { top: rule.bottom; bottom: parent.bottom; left: parent.left; right: timeline.left; margins: 16; bottomMargin: 22 }
+                    anchors { top: rule.bottom; bottom: timeline.top; left: leftSide.right; right: rightSide.left; margins: 16; bottomMargin: 12 }
                     // columns: as many as fit at >= 330 px, but the count that leaves the
                     // fewest empty cells in the last row (10 tiles: 5 x 2, not 4 + 4 + 2)
                     readonly property int cols: {
-                        const n = Math.max(1, deck.data.repos.length);
-                        const most = Math.max(1, Math.min(n, Math.floor(width / 330)));
+                        const n = Math.max(1, deck.hotRepos.length);
+                        const most = Math.max(1, Math.min(n, Math.floor(width / 300)));
                         let best = most, waste = 1e9;
                         for (let c = most; c >= Math.max(1, Math.ceil(most * 0.6)); c--) {
                             const w = Math.ceil(n / c) * c - n;
@@ -437,7 +557,7 @@ Scope {
                     readonly property real tileW: (width - (cols - 1) * 12) / cols
                     // tiles share the whole height: no empty band below them, and each
                     // tile spends its spare room on unstaged files and recent commits
-                    readonly property int rows: Math.max(1, Math.ceil(deck.data.repos.length / cols))
+                    readonly property int rows: Math.max(1, Math.ceil(deck.hotRepos.length / cols))
                     readonly property real tileH: (height - (rows - 1) * 12) / rows
 
                     Flow {
@@ -445,7 +565,7 @@ Scope {
                         spacing: 12
 
                         Repeater {
-                            model: deck.data.repos
+                            model: deck.hotRepos
 
                             Rectangle {
                                 id: tile

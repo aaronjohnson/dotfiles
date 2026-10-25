@@ -30,6 +30,15 @@ border-color=#586e75
 default-timeout=0
 border-color=#dc322f
 
+# misra's power alerts carry a chart (small multiples of the sensors, the last two
+# hours): a wider card with the chart under the text at full width.
+[app-name=misra]
+width=400
+# room for the text and the chart (mako's default cap is 100 px)
+height=400
+icon-location=bottom
+max-icon-size=376
+
 # Claude Code's "needs your attention" pings, sent through kitty.
 [app-name=kitty summary="Claude Code"]
 default-timeout=10000

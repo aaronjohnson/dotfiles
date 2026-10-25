@@ -1,0 +1,8 @@
+# Example subject groups for the Super+F12 deck (bin/deck-status). The real file is private,
+# ~/.config/deck/groups.txt (repo names can be client work; this repo is public).
+# One group per line: "name: repo repo ..."; * is a wildcard. Order here = order on screen.
+# Repos with something to do, or worked on in the last two days, go big in the middle;
+# the rest show as compact tiles under their group on the left and right.
+system: nixos dotfiles
+websites: *-site
+writing: book-* notes

@@ -18,6 +18,27 @@ HOME = Path.home()
 NIXOS = HOME / "nixos"
 INPUTS = {HOME / "src/jantar": "jantar", HOME / "nixos-intel-npu": "nixos-intel-npu", HOME / "src/misra": "misra"}
 RECENT = 14 * 86400          # a repo touched within two weeks gets a tile
+HOT = 2 * 86400              # ...and a big one in the middle if touched within two days
+# Subjects, private (repo names can be client work): "group: repo repo ..." per line.
+GROUPS = HOME / ".config/deck/groups.txt"
+
+
+def groups():
+    import fnmatch
+    out = []
+    if GROUPS.exists():
+        for line in GROUPS.read_text().splitlines():
+            name, sep, repos = line.partition(":")
+            if sep and not line.lstrip().startswith("#"):
+                out.append((name.strip(), repos.split()))
+
+    def find(repo_name):
+        bare = repo_name.removeprefix("~/")
+        for i, (name, pats) in enumerate(out):
+            if any(fnmatch.fnmatch(bare, p) for p in pats):
+                return name, i
+        return "other", len(out)
+    return find
 BIG_INDEX = 5_000_000        # bytes of .git/index above which the working tree isn't scanned
 
 
@@ -121,12 +142,17 @@ def system():
 
 def main():
     now = time.time()
+    find_group = groups()
     infos = [repo_info(r) for r in repos()]
     tiles, timeline = [], []
     for i in infos:
         ship_pending = sum(t["count"] for t in (i["ship"] or {}).get("targets", []))
-        recent = bool(i["commits"]) and now - i["commits"][0]["ts"] < RECENT
+        last = i["commits"][0]["ts"] if i["commits"] else 0
+        recent = now - last < RECENT
         i["active"] = bool(i["draft"] or i["staged"] or (i["ahead"] or 0) or ship_pending or (i["dirty"] or 0))
+        # hot = something to do now, or worked on in the last two days: a big tile in the middle
+        i["hot"] = bool(i["draft"] or i["staged"] or (i["ahead"] or 0) or ship_pending or now - last < HOT)
+        i["group"], i["group_order"] = find_group(i["name"])
         if i["active"] or recent or i["path"] == str(NIXOS):
             tiles.append(i)
         timeline += [{"repo": i["name"], **c} for c in i["commits"] if now - c["ts"] < RECENT]
