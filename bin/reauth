@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# reauth: run a login command that needs a terminal and a browser, in a small floating
+# window, so a popup (the deck's Log in button, a notification's action) can start it.
+#
+#   reauth "firebase login --reauth"           open the login window now
+#   reauth --notify WHAT "firebase login ..."  a critical notification with a "Log in" action;
+#                                              clicking it opens the window (returns at once)
+set -u
+if [[ ${1:-} == --notify ]]; then
+  what=$2 cmd=$3
+  # notify-send waits for the click, so it runs detached; the caller carries on
+  setsid -f bash -c '
+    act=$(notify-send -a login -u critical -A login="Log in" \
+            "$1 needs a login" "Click Log in: \`$2\` in a small window (your browser opens)." 2>/dev/null)
+    [[ $act == login ]] && exec "$0" "$2"' "$0" "$what" "$cmd" >/dev/null 2>&1
+  exit 0
+fi
+cmd=${1:?usage: reauth "login command" | reauth --notify WHAT "login command"}
+exec kitty --class land -o background_opacity=0.9 --title "Log in" -e bash -c "
+  echo '\$ $cmd'; echo
+  $cmd
+  status=\$?
+  echo
+  if [[ \$status == 0 ]]; then echo 'Logged in. You can close this window (Enter).'
+  else echo \"The login exited with status \$status. Enter to close.\"; fi
+  read -r _
+  qs ipc call deck open >/dev/null 2>&1 || true"

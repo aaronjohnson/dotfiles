@@ -65,8 +65,9 @@ ship_target() {
     (( try == 1 )) && fix=$(reauth_fix "$log") || break
     printf '\n\e[1m%s needs a fresh login.\e[0m\n' "$name"
     if [[ -n "${LAND_YES:-}" ]]; then
-      echo "NEEDS LOGIN: run \`$fix\`, or ship from a terminal (Super+Shift+F11)."
-      notify "Ship needs a login: $name" "$rname: run ship in a terminal (Super+Shift+F11)." 0
+      echo "NEEDS LOGIN: run \`$fix\` (the Log in button, or the notification)."
+      # deck mode skips notify(), but this one needs you: a notification with a Log in action
+      "$HOME/dotfiles/bin/reauth" --notify "Ship $name" "$fix"
       return 1
     fi
     ask "Run \`$fix\` here (opens the browser), then retry?" || break
@@ -80,7 +81,9 @@ ship_target() {
 # A failed run whose log says the login expired: print the command that logs in again (else fail).
 # Firebase CLI tokens lapse after a while idle (first seen 2026-10-18).
 reauth_fix() {
-  if grep -q 'firebase login --reauth' "$1"; then echo "npx -y firebase-tools@latest login --reauth"
+  if grep -q 'firebase login --reauth' "$1"; then
+    if command -v firebase >/dev/null; then echo "firebase login --reauth"
+    else echo "npx -y firebase-tools@latest login --reauth"; fi
   else return 1; fi
 }
 

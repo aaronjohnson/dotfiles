@@ -37,6 +37,13 @@ Scope {
     // While loading, chips stay disabled: right after an action the tiles still show the
     // old state (e.g. Commit on a draft that's already committed) until the refresh lands.
     readonly property bool idle: busyRepo === "" && !loading
+    property string needsLogin: ""     // set when a run stopped for a re-login; shown in the top tab
+    property string loginCmd: ""       // the command that logs in again (bin/reauth runs it)
+    function logIn() {
+        Quickshell.execDetached([home + "/dotfiles/bin/reauth", loginCmd]);
+        needsLogin = ""; loginCmd = "";
+        hide();                          // the login window reopens the deck when it's done
+    }
     function refresh() { loading = true; statusProc.running = true; }
     function checkSwitch() { switchState = "checking"; switchProc.running = true; }
     function show() { open = true; skipped = ({}); refresh(); checkSwitch(); }
@@ -168,6 +175,10 @@ Scope {
         }
         onExited: (code) => {
             deck.setResult(deck.busyRepo, code === 0, deck.busyLabel, deck.busyLine);
+            // a run that stopped for a re-login: the tab turns red with a Log in button
+            const login = /run `([^`]+)`/.exec(deck.busyLine);
+            deck.loginCmd = code !== 0 && login ? login[1] : "";
+            deck.needsLogin = deck.loginCmd ? deck.busyLabel + " needs a login" : "";
             const wasSwitch = deck.busyRepo === "system";
             deck.busyRepo = "";
             deck.refresh();
@@ -191,6 +202,9 @@ Scope {
         property bool filled: false
         property bool action: false
         property bool enabledAction: true
+        // text colour; on a filled chip it must differ from the fill (the Y chip is filled with
+        // the surface colour, so its default surface-coloured text was invisible)
+        property color textColor: filled ? deck.theme.surface : tone
         signal clicked()
         height: 22
         width: chipText.implicitWidth + 16
@@ -203,7 +217,7 @@ Scope {
             id: chipText
             anchors.centerIn: parent
             text: chip.text
-            color: chip.filled ? deck.theme.surface : chip.tone
+            color: chip.textColor
             font.pixelSize: 11
             font.bold: chip.action
             font.letterSpacing: 0.5
@@ -266,7 +280,9 @@ Scope {
                 focus: true
                 Keys.onPressed: event => {
                     if (event.key === Qt.Key_Escape) deck.hide();
-                    else if (event.key === Qt.Key_Y || event.key === Qt.Key_Return || event.key === Qt.Key_Enter) deck.yes();
+                    else if (event.key === Qt.Key_Y || event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                        if (deck.needsLogin) deck.logIn(); else deck.yes();
+                    }
                     else if (event.key === Qt.Key_N || event.key === Qt.Key_Space) deck.no();
                     else if (event.key === Qt.Key_R) { deck.refresh(); deck.checkSwitch(); }
                     else return;
@@ -346,7 +362,8 @@ Scope {
                     height: 40
                     width: askRow.width + 36
                     radius: 8
-                    color: deck.nextStep || deck.busyRepo !== "" ? deck.theme.violet : deck.theme.green
+                    color: deck.needsLogin ? deck.theme.red
+                         : deck.nextStep || deck.busyRepo !== "" ? deck.theme.violet : deck.theme.green
                     border.width: 1
                     border.color: deck.theme.dim
 
@@ -356,7 +373,7 @@ Scope {
                         spacing: 12
                         Text {
                             anchors.verticalCenter: parent.verticalCenter
-                            text: deck.busyRepo !== "" ? "RUNNING" : deck.nextStep ? "NEXT" : "DONE"
+                            text: deck.busyRepo !== "" ? "RUNNING" : deck.needsLogin ? "LOGIN" : deck.nextStep ? "NEXT" : "DONE"
                             color: deck.theme.surface
                             opacity: 0.85
                             font.pixelSize: 12; font.bold: true; font.letterSpacing: 2
@@ -364,6 +381,7 @@ Scope {
                         Text {
                             anchors.verticalCenter: parent.verticalCenter
                             text: deck.busyRepo !== "" ? deck.busyLabel + " · " + deck.busyLine
+                                : deck.needsLogin ? deck.needsLogin
                                 : deck.loading ? "reading repos…"
                                 : deck.nextStep ? deck.nextStep.ask
                                 : deck.switchState === "checking" ? "checking whether a switch is needed…"
@@ -374,18 +392,25 @@ Scope {
                             width: Math.min(implicitWidth, panel.width * 0.45)
                         }
                         Chip {
-                            visible: !!deck.nextStep
+                            visible: !!deck.nextStep && !deck.needsLogin
                             anchors.verticalCenter: parent.verticalCenter
-                            text: "Y  yes"; tone: deck.theme.surface; filled: true; action: true
+                            text: "Y  yes"; tone: deck.theme.surface; textColor: deck.theme.violet; filled: true; action: true
                             enabledAction: deck.idle
                             onClicked: deck.yes()
                         }
                         Chip {
-                            visible: !!deck.nextStep
+                            visible: !!deck.nextStep && !deck.needsLogin
                             anchors.verticalCenter: parent.verticalCenter
                             text: "N  skip"; tone: deck.theme.surface; action: true
                             enabledAction: deck.idle
                             onClicked: deck.no()
+                        }
+                        Chip {
+                            visible: !!deck.needsLogin
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: "Log in"; tone: deck.theme.surface; textColor: deck.theme.red
+                            filled: true; action: true
+                            onClicked: deck.logIn()
                         }
                     }
                 }
