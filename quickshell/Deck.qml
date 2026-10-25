@@ -46,6 +46,9 @@ Scope {
     // { verdict, failures, open: [N], fixed: { N: M }, blame: { N: repo } }, or {} until misra answers.
     property var verdict: ({})
     function conclude() {
+        try { concludeNow(); } catch (e) { console.warn("deck: conclude failed: " + e); }   // never stall a run
+    }
+    function concludeNow() {
         const q = v => '"' + String(v).replace(/["\\]/g, "") + '"';
         const kind = l => ({ "Log": "login", "A": "all" })[l.split(" ")[0]] || l.split(" ")[0].toLowerCase();
         const name = p => p === "system" || p === "all" ? p : p.split("/").pop();
@@ -55,7 +58,16 @@ Scope {
             return m ? "\nmissing(" + i + "," + q(m[1] || m[2]) + ")." : "";
         };
         const facts = log.map((e, i) => "entry(" + i + "," + e.state + "," + kind(e.label) + "," + q(name(e.repo)) + ")."
-                                         + missing(e, i)).join("\n");
+                                         + missing(e, i))
+            // the queue's state, for rules/land/queue.lp: what the line says when no question is up
+            .concat(plan.map((st, k) => (skipped[st.key] ? "skipped(" : "queued(") + k + "," + q(st.label) + "," + q(name(st.repo)) + ")."))
+            .concat(switchState ? ["switch(" + switchState + ")."] : [])
+            .concat([].concat.apply([], (data.repos || []).map(r => [   // no flatMap in this JS engine
+                (r.dirty || 0) > 0 ? "dirty(" + q(name(r.path)) + "," + r.dirty + ")." : "",
+                (r.behind || 0) > 0 ? "behind(" + q(name(r.path)) + "," + r.behind + ")." : "",
+                r.draft && !r.staged.length ? "stale_draft(" + q(name(r.path)) + ")." : ""])))
+            .concat(busyRepo !== "" ? ["busy."] : []).concat(loading ? ["loading."] : [])
+            .filter(x => x).join("\n");
         concludeProc.running = false;
         concludeProc.command = ["sh", "-c", 'printf "%s\\n" "$1" > "$2" && exec misra land-log "$2"', "sh",
                                 facts, Quickshell.env("XDG_RUNTIME_DIR") + "/deck-log.lp"];
@@ -222,6 +234,7 @@ Scope {
                 try { deck.data = JSON.parse(this.text); } catch (e) {}
                 deck.loading = false;
                 // the running system, logged when it changes (and on the first read)
+                deck.conclude();
                 const sys = deck.data.system || {};
                 const said = "generation " + (sys.generation || "?") + " · ~/nixos " + (sys.head || "");
                 if (said !== deck.lastSystem) { deck.lastSystem = said; deck.note("info", "System", "system", said); }
@@ -235,6 +248,7 @@ Scope {
         command: ["env", "LAND_YES=1", deck.land, "needs-switch"]
         onExited: (code) => {
             deck.switchState = code === 0 ? "differs" : code === 1 ? "same" : "broken";
+            deck.conclude();
             deck.note(code === 1 ? "ok" : code === 0 ? "info" : "bad", "Check", "system",
                       code === 1 ? "running = ~/nixos" : code === 0 ? "~/nixos differs from the running system"
                       : "~/nixos doesn't build (see " + "$XDG_RUNTIME_DIR/land-build.log)");
@@ -699,7 +713,7 @@ Scope {
                                     : deck.loading ? "Reading repos…"
                                     : deck.nextStep ? deck.nextStep.ask
                                     : deck.switchState === "checking" ? "Checking whether a switch is needed…"
-                                    : "Nothing left to land or ship"
+                                    : deck.verdict.headline || "Nothing left to land or ship"
                                 color: deck.needsLogin ? deck.theme.red
                                      : deck.nextStep || deck.busyRepo !== "" ? deck.theme.violet : deck.theme.green
                                 font.pixelSize: 14; font.bold: true

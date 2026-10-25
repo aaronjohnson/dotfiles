@@ -66,12 +66,33 @@ bump_nixos() {
   if ! git -C "$r" push; then notify "Push failed: $name ✗" "Nothing else changed." 0; pause; return; fi
   rev=$(git -C "$r" rev-parse --short HEAD)
   subject=$(git -C "$r" log -1 --format=%s)
+
+  # Release checkpoint: a tag when the CHANGELOG names a new version, else the branch
+  # tip. misra's rules/release decide (`misra release-plan`); land tags and points at it.
+  local plan mode pplan ptag reason ref
+  plan=$(misra release-plan "$r" 2>/dev/null)
+  IFS=$'\t' read -r mode pplan ptag reason < <(printf '%s' "$plan" | python3 -c '
+import json, sys
+try: p = json.load(sys.stdin)
+except Exception: p = {"mode": "tip", "plan": "tip", "tag": None, "reason": "misra release-plan unavailable: the branch tip"}
+print(p["mode"], p["plan"], p["tag"] or "-", p["reason"], sep="\t")')
+  printf '\e[2mrelease: %s\e[0m\n' "$reason"
+  if [[ "$pplan" == new_tag ]]; then
+    printf '\e[2mgit tag -a %s; git push origin %s\e[0m\n' "$ptag" "$ptag"
+    if ! { git -C "$r" tag -a "$ptag" -m "$ptag: $subject" && git -C "$r" push origin "$ptag"; }; then
+      notify "Tagging $name failed ✗" "$ptag: see the commit window." 0; pause; return
+    fi
+  fi
+  if [[ "$mode" == tag ]]; then ref="$ptag"; else ref=$(git -C "$r" branch --show-current); fi
+  # point the input at the tag (or the branch): github:owner/repo/<ref>
+  sed -i -E "s|^([[:space:]]*${input}\.url = \"github:[^/\"]+/[^/\"]+)(/[^\"]*)?\";|\1/${ref}\";|" "$nixos/flake.nix"
+
   # --refresh: Nix otherwise reuses its cached idea of the branch for an hour.
   printf '\e[2mnix flake update %s --refresh\e[0m\n' "$input"
   if ! (cd "$nixos" && nix flake update "$input" --refresh); then
     notify "Updating ~/nixos failed ✗" "$input: see the commit window." 0; pause; return
   fi
-  if git -C "$nixos" diff --quiet -- flake.lock; then
+  if git -C "$nixos" diff --quiet -- flake.lock flake.nix; then
     echo "~/nixos already points at $input $rev."
     return
   fi
@@ -81,15 +102,18 @@ bump_nixos() {
     pause
     return
   fi
-  git -C "$nixos" add flake.lock
-  local draft="$nixos/.git/COMMIT_DRAFT"
+  git -C "$nixos" add flake.lock flake.nix
+  local draft="$nixos/.git/COMMIT_DRAFT" at="$rev"
+  [[ "$mode" == tag ]] && at="$ptag ($rev)"
   if [[ -f "$draft" ]]; then
     # Another draft is waiting: add the bump to it.
-    printf '\nAlso bumps %s to %s: %s\n' "$input" "$rev" "$subject" >> "$draft"
+    printf '\nAlso bumps %s to %s: %s\n' "$input" "$at" "$subject" >> "$draft"
   else
-    printf '%s: %s\n\nBumps %s to %s.\n' "$input" "$subject" "$input" "$rev" > "$draft"
+    if [[ "$mode" == tag ]]; then printf '%s → %s: %s\n' "$input" "$ptag" "$subject" > "$draft"
+    else printf '%s: %s\n' "$input" "$subject" > "$draft"; fi
+    printf '\nBumps %s to %s. Release: %s.\n' "$input" "$at" "$reason" >> "$draft"
   fi
-  echo "~/nixos: flake.lock staged, draft written."
+  echo "~/nixos: flake.nix and flake.lock staged, draft written."
 }
 
 # Does ~/nixos build to something other than the running system? Builds as the user
