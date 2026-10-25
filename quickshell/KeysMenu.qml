@@ -78,6 +78,7 @@ Scope {
     readonly property var modNames: [[64, "Super"], [4, "Ctrl"], [8, "Alt"], [1, "Shift"]]
     readonly property var keyNames: ({
         "left": "←", "right": "→", "up": "↑", "down": "↓",
+        "TAB": "Tab", "Tab": "Tab", "grave": "`",
         "mouse:272": "left drag", "mouse:273": "right drag",
         "mouse_down": "scroll", "mouse_up": "scroll",
         "XF86AudioRaiseVolume": "Vol+", "XF86AudioLowerVolume": "Vol−",

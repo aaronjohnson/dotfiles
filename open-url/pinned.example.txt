@@ -1,0 +1,8 @@
+# Example pinned sites for the Super+O popup (bin/open-url).
+# Your real list lives outside this repo, in ~/.config/open-url/pinned.txt (this repo is
+# public): copy this file there and edit it. One per line: url, then an optional label.
+# Bare hosts are fine (https:// is added). The order here is the order shown.
+search.nixos.org/packages   NixOS packages
+search.nixos.org/options    NixOS options
+wiki.hypr.land              Hyprland wiki
+quickshell.org/docs         Quickshell docs

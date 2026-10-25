@@ -1439,6 +1439,15 @@ ShellRoot {
     // Password prompts for pkexec etc.: quickshell is the polkit agent (PolkitPrompt.qml).
     PolkitPrompt { theme: root.c }
 
+    // Super+F12 / Super+F11: land and ship as per-repo tiles (Deck.qml).
+    Deck { theme: root.c }
+
+    // Super+Tab / Super+Shift+Tab / Super+`: Mac-style app and window switcher (Switcher.qml).
+    Switcher { theme: root.c }
+
+    // Super+O: open a link: pinned, most visited, recent pages (OpenPopup.qml, bin/open-url).
+    OpenPopup { theme: root.c }
+
     IpcHandler {
         target: "bar"
         function toggleAutoHide(): void { root.autoHide = !root.autoHide; }

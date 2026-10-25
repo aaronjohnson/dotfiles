@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Global commit-msg (core.hooksPath = ~/dotfiles/git/hooks): the public-repo guard on the
+# message, then the repo's own .git/hooks/commit-msg if it has one.
+"$HOME/dotfiles/git/public-guard" commit-msg "$1" || exit 1
+own="$(git rev-parse --git-common-dir)/hooks/commit-msg"
+if [[ -x "$own" ]]; then exec "$own" "$@"; fi

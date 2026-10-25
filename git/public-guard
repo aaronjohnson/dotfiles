@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""Stop personal names and private details from landing in a PUBLIC repo's commits.
+
+Run by the global hooks in ~/dotfiles/git/hooks (git config --global core.hooksPath):
+    public-guard pre-commit          scan the staged lines that are being added, and file names
+    public-guard commit-msg FILE     scan the commit message (land's drafts included)
+
+Only repos whose GitHub remote is public are checked: `gh` is asked once a day per repo
+and the answer cached in .git/public-guard. No GitHub remote: not checked.
+PUBLIC_GUARD=force checks any repo; PUBLIC_GUARD=off skips; `git commit --no-verify`
+skips the hooks for one commit.
+
+What it looks for:
+  - terms from ~/.config/git/private-terms.txt (private, outside every repo): one per line,
+    '#' comments. A term with a capital letter matches that case only (so "Don" doesn't
+    catch "don't"); an all-lowercase term matches any case; "re:<regex>" is a regex.
+  - email addresses, except noreply / example ones.
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+TERMS = Path.home() / ".config/git/private-terms.txt"
+TTL = 86400
+EMAIL = re.compile(r"[\w.+-]+@[\w-]+(\.[\w-]+)+")
+EMAIL_OK = re.compile(r"(noreply|no-reply|example\.(com|org|net)|localhost|users\.noreply\.github\.com)", re.I)
+
+
+def git(*args):
+    r = subprocess.run(["git", *args], capture_output=True, text=True)
+    return r.stdout if r.returncode == 0 else ""
+
+
+def github_slug():
+    for remote in git("remote").split():
+        url = git("remote", "get-url", remote).strip()
+        m = re.search(r"github\.com[:/]([^/]+)/([^/]+?)(\.git)?$", url)
+        if m:
+            return f"{m[1]}/{m[2]}"
+    return None
+
+
+def is_public():
+    mode = os.environ.get("PUBLIC_GUARD", "")
+    if mode == "off":
+        return False
+    if mode == "force":
+        return True
+    slug = github_slug()
+    if not slug:
+        return False
+    cache = Path(git("rev-parse", "--git-common-dir").strip()) / "public-guard"
+    try:
+        ts, state, cached_slug = cache.read_text().split()
+        if cached_slug == slug and time.time() - float(ts) < TTL:
+            return state == "public"
+    except (OSError, ValueError):
+        pass
+    r = subprocess.run(["gh", "repo", "view", slug, "--json", "isPrivate"], capture_output=True, text=True)
+    try:
+        public = not json.loads(r.stdout)["isPrivate"]
+    except (json.JSONDecodeError, KeyError):
+        return True          # can't tell (offline?): check anyway, a false alarm is cheap
+    try:
+        cache.write_text(f"{time.time()} {'public' if public else 'private'} {slug}\n")
+    except OSError:
+        pass
+    return public
+
+
+def patterns():
+    out = []
+    if not TERMS.exists():
+        return out
+    for line in TERMS.read_text().splitlines():
+        t = line.strip()
+        if not t or t.startswith("#"):
+            continue
+        if t.startswith("re:"):
+            out.append((t, re.compile(t[3:])))
+        else:
+            flags = 0 if any(c.isupper() for c in t) else re.I
+            # whole word; an apostrophe counts as part of a word ("Don" vs "Don't")
+            out.append((t, re.compile(r"(?<![\w'])" + re.escape(t) + r"(?![\w'])", flags)))
+    return out
+
+
+def scan(lines, pats):
+    """lines: [(where, text)] -> [(where, what, text)]"""
+    hits = []
+    for where, text in lines:
+        for name, rx in pats:
+            if rx.search(text):
+                hits.append((where, name, text))
+        for m in EMAIL.finditer(text):
+            if not EMAIL_OK.search(m.group(0)):
+                hits.append((where, "email " + m.group(0), text))
+    return hits
+
+
+def staged_lines():
+    out, path, n = [], "?", 0
+    for line in git("diff", "--cached", "-U0", "--no-color", "--diff-filter=ACMR").splitlines():
+        if line.startswith("+++ "):
+            path = line[6:] if line.startswith("+++ b/") else line[4:]
+            out.append((f"{path} (file name)", path))
+        elif line.startswith("@@"):
+            m = re.search(r"\+(\d+)", line)
+            n = int(m[1]) if m else 0
+        elif line.startswith("+"):
+            out.append((f"{path}:{n}", line[1:]))
+            n += 1
+    return out
+
+
+def message_lines(file):
+    text = Path(file).read_text(errors="replace")
+    return [(f"commit message line {i}", l) for i, l in enumerate(text.splitlines(), 1)
+            if not l.startswith("#")]
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] not in ("pre-commit", "commit-msg"):
+        sys.exit(__doc__)
+    if not is_public():
+        return
+    lines = staged_lines() if sys.argv[1] == "pre-commit" else message_lines(sys.argv[2])
+    hits = scan(lines, patterns())
+    if not hits:
+        return
+    print(f"public-guard: {len(hits)} private mention(s) in a commit to a PUBLIC repo:", file=sys.stderr)
+    for where, what, text in hits[:20]:
+        print(f"  {where}: {what}   | {text.strip()[:100]}", file=sys.stderr)
+    print("Reword or remove them (terms: ~/.config/git/private-terms.txt); "
+          "or commit with --no-verify if it's really fine.", file=sys.stderr)
+    # last line is what the deck shows on the tile
+    print(f"Blocked: {', '.join(sorted({w for _, w, _ in hits}))[:120]}", file=sys.stderr)
+    sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

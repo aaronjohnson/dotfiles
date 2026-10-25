@@ -37,10 +37,13 @@ hl.monitor({
 })
 
 -- An external screen (USB-C) is the main one: it sits at 0,0 with workspaces 1-5 and the focus,
--- and the laptop panel goes to its right. With the lid closed the panel turns off; logind
--- ignores the lid while docked (HandleLidSwitchDocked defaults to ignore), so the laptop keeps
--- running. Rules for an output merge, so turning the panel back on needs disabled = false.
+-- and the laptop panel goes beside it, on the side it sits on the desk (panel_side), bottom
+-- edges level since the laptop screen sits lower. With the lid closed the panel turns off;
+-- logind ignores the lid while docked (HandleLidSwitchDocked defaults to ignore), so the
+-- laptop keeps running. Rules for an output merge, so turning the panel back on needs
+-- disabled = false.
 local laptop = "eDP-1"
+local panel_side = "left"   -- "left" or "right" of the external screen
 
 local function lid_closed()
   local f = io.open("/proc/acpi/button/lid/LID0/state")
@@ -63,11 +66,16 @@ local function arrange()
   if ext.x ~= 0 or ext.y ~= 0 then
     hl.monitor({ output = ext.name, mode = "preferred", position = "0x0", scale = "auto" })
   end
-  local right = math.floor(ext.width / ext.scale)
+  -- logical sizes; the panel's is known once it's on (2880x1920 at scale 2 -> 1440x960)
+  local ext_w, ext_h = math.floor(ext.width / ext.scale), math.floor(ext.height / ext.scale)
+  local pan_w = panel and math.floor(panel.width / panel.scale) or 1440
+  local pan_h = panel and math.floor(panel.height / panel.scale) or 960
+  local x = panel_side == "left" and -pan_w or ext_w
+  local y = math.max(0, ext_h - pan_h)          -- bottom edges level
   if lid_closed() then
     if panel then hl.monitor({ output = laptop, disabled = true }) end
-  elseif not panel or panel.x ~= right then
-    on.position = right .. "x0"; hl.monitor(on)
+  elseif not panel or panel.x ~= x or panel.y ~= y then
+    on.position = x .. "x" .. y; hl.monitor(on)
   end
   -- the panel shows 6 first, else Hyprland fills its gap with a new low workspace
   if panel and not lid_closed() and panel.active_workspace.id <= 5 then
@@ -351,6 +359,8 @@ local closeWindowBind = hl.bind(mainMod .. " + C", hl.dsp.window.close(), { desc
 hl.bind(mainMod .. " + M", hl.dsp.exec_cmd("command -v hyprshutdown >/dev/null 2>&1 && hyprshutdown || hyprctl dispatch 'hl.dsp.exit()'"), { description = "Session: Log out of Hyprland" })
 hl.bind(mainMod .. " + E", hl.dsp.exec_cmd(fileManager), { description = "Apps: File manager" })
 hl.bind(mainMod .. " + B", hl.dsp.exec_cmd("epiphany"), { description = "Apps: Web browser" })
+-- Super+O: open a link (quickshell OpenPopup.qml): clipboard URL, pinned, most visited, recent.
+hl.bind(mainMod .. " + O", hl.dsp.exec_cmd("qs ipc call open toggle"), { description = "Apps: Open a link (pinned, most visited, recent)" })
 
 -- Alt+C / Alt+V copy and paste in any window (Chromebook/Mac habit). Terminals use
 -- Ctrl+Shift+C/V for copy/paste, since Ctrl+C there means "interrupt".
@@ -370,11 +380,20 @@ hl.bind(mainMod .. " + F1", hl.dsp.exec_cmd(terminal .. " --title Claude claude"
 -- Super+F2: shortcuts and window commands (quickshell KeysMenu.qml).
 hl.bind(mainMod .. " + F2", hl.dsp.exec_cmd("qs ipc call keys toggle"), { description = "Ours: This menu: shortcuts and window commands" })
 
--- Super+F12: land changes: commit the drafted messages, push and bump ~/nixos, switch
--- (password through polkit), in a small floating window, with mako notifications.
-hl.bind(mainMod .. " + F12", hl.dsp.exec_cmd("kitty --class land -o background_opacity=0.85 --title 'Land' -e ~/dotfiles/bin/land"), { description = "Ours: Land: commit drafts, switch NixOS" })
--- Super+F11: ship: deploy what changed since the last ship, per repo .ship file, asking first
-hl.bind(mainMod .. " + F11", hl.dsp.exec_cmd("kitty --class land -o background_opacity=0.85 --title 'Ship' -e ~/dotfiles/bin/ship"), { description = "Ours: Ship: deploy what changed" })
+-- Super+F12 / Super+F11: the land/ship deck (quickshell Deck.qml): a tile per repo with
+-- chips to commit drafts, push, bump ~/nixos, ship .ship targets and switch NixOS.
+hl.bind(mainMod .. " + F12", hl.dsp.exec_cmd("qs ipc call deck toggle"), { description = "Ours: Land / ship deck: commit, push, ship, switch" })
+hl.bind(mainMod .. " + F11", hl.dsp.exec_cmd("qs ipc call deck toggle"), { description = "Ours: Land / ship deck: commit, push, ship, switch" })
+-- +Shift: the same in a terminal, one y/N question at a time (bin/land, bin/ship).
+hl.bind(mainMod .. " + SHIFT + F12", hl.dsp.exec_cmd("kitty --class land -o background_opacity=0.85 --title 'Land' -e ~/dotfiles/bin/land"), { description = "Ours: Land in a terminal: commit drafts, switch NixOS" })
+hl.bind(mainMod .. " + SHIFT + F11", hl.dsp.exec_cmd("kitty --class land -o background_opacity=0.85 --title 'Ship' -e ~/dotfiles/bin/ship"), { description = "Ours: Ship in a terminal: deploy what changed" })
+
+-- Super+Tab like Mac Cmd+Tab (quickshell Switcher.qml): apps most recent first; hold
+-- Super and tap Tab to walk, release to switch. Super+` walks the current app's windows.
+hl.bind(mainMod .. " + TAB",           hl.dsp.exec_cmd("qs ipc call switcher next"),       { description = "Windows: Switch app (hold Super, tap Tab)" })
+hl.bind(mainMod .. " + SHIFT + TAB",   hl.dsp.exec_cmd("qs ipc call switcher prev"),       { description = "Windows: Switch app, backwards" })
+hl.bind(mainMod .. " + grave",         hl.dsp.exec_cmd("qs ipc call switcher nextWindow"), { description = "Windows: Next window of this app" })
+hl.bind(mainMod .. " + SHIFT + grave", hl.dsp.exec_cmd("qs ipc call switcher prevWindow"), { description = "Windows: Previous window of this app" })
 
 -- Super+F9: screenshot of the screen; +Shift: drag a region; +Alt: the focused window.
 -- Saved to ~/Pictures/Screenshots and copied to the clipboard (hyprshot notifies).

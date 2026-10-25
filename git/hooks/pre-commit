@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Global pre-commit (core.hooksPath = ~/dotfiles/git/hooks): the public-repo guard, then the
+# repo's own .git/hooks/pre-commit if it has one (a global hooksPath would otherwise hide it).
+"$HOME/dotfiles/git/public-guard" pre-commit || exit 1
+own="$(git rev-parse --git-common-dir)/hooks/pre-commit"
+if [[ -x "$own" ]]; then exec "$own" "$@"; fi

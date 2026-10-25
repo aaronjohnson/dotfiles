@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+"""Open a link in the browser without leaving anything behind. Super+O, kitty link clicks.
+
+    open-url https://example.org     open it (new tab in a running Epiphany, else a new one)
+    open-url example.org/path         bare host: https:// is added
+    open-url some words               anything else: a web search
+    open-url --list                   JSON for the Super+O popup (OpenPopup.qml):
+                                      pinned sites, most-visited hosts, recent pages
+
+Recent pages and hosts come from Epiphany's own history (read from a copy, so the running
+browser is never touched). Pinned sites: ~/.config/open-url/pinned.txt (private, outside this public repo), one per line,
+"url  label" (label optional). The browser is focused afterwards.
+"""
+
+import json
+import re
+import shutil
+import sqlite3
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from urllib.parse import quote_plus, urlparse
+
+HOME = Path.home()
+HISTORY = HOME / ".local/share/epiphany/ephy-history.db"
+# Private, outside the (public) dotfiles repo; the example in the repo is the fallback.
+PINNED = HOME / ".config/open-url/pinned.txt"
+PINNED_EXAMPLE = HOME / "dotfiles/open-url/pinned.example.txt"
+SEARCH = "https://duckduckgo.com/?q="
+# sign-in hops, not places anyone goes on purpose
+SKIP_HOSTS = re.compile(r"^(accounts\.|login\.|auth\.|sso\.|oauth)")
+SKIP_TITLES = {"Problem Loading Page", "Authorize application", "Sign in", "Redirecting…", "Redirecting..."}
+BROWSER_CLASS = "org.gnome.Epiphany"
+
+
+def normalise(text):
+    t = text.strip()
+    if re.match(r"^[a-z][a-z0-9+.-]*://", t, re.I) or t.startswith(("file:", "mailto:", "about:")):
+        return t
+    # host[:port][/path] with a dot (or localhost), no spaces: treat as a site
+    if " " not in t and re.match(r"^(localhost|[\w-]+(\.[\w-]+)+)(:\d+)?(/.*)?$", t):
+        return ("http://" if t.startswith("localhost") else "https://") + t
+    return SEARCH + quote_plus(t)
+
+
+def open_url(text):
+    url = normalise(text)
+    # Epiphany opens a URL as a new tab in its running window (--new-window is opt-in)
+    cmd = ["epiphany", url]
+    # setsid + no stdio: the browser is not a child of whoever called us (a terminal can close)
+    subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True)
+    time.sleep(0.3)
+    subprocess.run(["hyprctl", "eval", f'hl.dispatch(hl.dsp.focus({{ window = "class:{BROWSER_CLASS}" }}))'],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    print(url)
+
+
+def ago(ts):
+    s = int(time.time() - ts)
+    for unit, n in (("d", 86400), ("h", 3600), ("m", 60)):
+        if s >= n:
+            return f"{s // n}{unit}"
+    return "now"
+
+
+def history():
+    if not HISTORY.exists():
+        return [], [], []
+    with tempfile.TemporaryDirectory() as d:
+        for suf in ("", "-wal", "-shm"):   # the WAL holds the newest visits
+            p = Path(str(HISTORY) + suf)
+            if p.exists():
+                shutil.copy(p, Path(d) / (HISTORY.name + suf))
+        con = sqlite3.connect(Path(d) / HISTORY.name)
+        recent, seen = [], set()
+        for url, title, last in con.execute(
+                "select url, title, last_visit_time from urls where hidden_from_overview = 0 "
+                "and url not like 'about:%' and url not like 'ephy-%' "
+                "order by last_visit_time desc limit 120"):
+            ts = last / 1e6 if last and last > 1e12 else (last or 0)   # microseconds or seconds
+            host = urlparse(url).hostname or url
+            key = (title or url, host)          # same page reached by several URLs: once
+            if SKIP_HOSTS.match(host) or (title or "") in SKIP_TITLES or key in seen:
+                continue
+            seen.add(key)
+            recent.append({"url": url, "title": title or "", "host": host, "ago": ago(ts)})
+            if len(recent) == 40:
+                break
+        top, seen = [], set()
+        for url, title, n in con.execute(
+                "select url, title, visit_count from urls where hidden_from_overview = 0 "
+                "and url not like 'about:%' order by visit_count desc limit 80"):
+            host = urlparse(url).hostname or url
+            key = (title or url, host)
+            if SKIP_HOSTS.match(host) or (title or "") in SKIP_TITLES or key in seen:
+                continue
+            seen.add(key)
+            top.append({"url": url, "title": title or url, "host": host, "count": n})
+            if len(top) == 20:
+                break
+        hosts = [{"host": urlparse(u).hostname or u, "url": u, "title": t or "", "count": n}
+                 for u, t, n in con.execute(
+                     "select url, title, visit_count from hosts where visit_count > 0 "
+                     "order by visit_count desc limit 24")]
+        con.close()
+    return recent, [h for h in hosts if h["host"] and not SKIP_HOSTS.match(h["host"])], top
+
+
+def pinned():
+    out = []
+    src = PINNED if PINNED.exists() else PINNED_EXAMPLE
+    if src.exists():
+        for line in src.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            url, _, label = line.partition(" ")
+            url = normalise(url)
+            out.append({"url": url, "label": label.strip() or (urlparse(url).hostname or url)})
+    return out
+
+
+def main():
+    args = sys.argv[1:]
+    if not args:
+        sys.exit(__doc__)
+    if args[0] == "--list":
+        recent, hosts, top = history()
+        print(json.dumps({"pinned": pinned(), "top": top, "hosts": hosts, "recent": recent}))
+        return
+    open_url(" ".join(args))
+
+
+if __name__ == "__main__":
+    main()

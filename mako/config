@@ -9,6 +9,8 @@ margin=10
 border-size=2
 border-radius=8
 max-visible=4
+# Above the quickshell popups (deck, keys menu, password prompt), not hidden behind them.
+layer=overlay
 
 # Age out after 8 s (apps can ask for longer or shorter; critical ones stay).
 default-timeout=8000

@@ -1,0 +1,9 @@
+# Example term list for public-guard. The real list is private: ~/.config/git/private-terms.txt
+# (outside every repo, since the list itself names what shouldn't be public).
+#
+# One term per line, matched as a whole word (an apostrophe counts as part of a word, so
+# "Don" doesn't catch "Don't"). A term with a capital letter matches that case only; an
+# all-lowercase term matches any case; "re:" starts a regular expression.
+Alex Example
+internal-project-name
+re:\b\d{3}[-. ]\d{3}[-. ]\d{4}\b

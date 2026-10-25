@@ -1,0 +1,141 @@
+#!/usr/bin/env python3
+"""JSON snapshot of every repo `land` and `ship` look at, for the quickshell deck (Deck.qml).
+
+Read-only: git queries, the commit/deploy drafts, and each .ship target's files compared
+with what last shipped (.git/ship/<name>.manifest, same rule as `ship`). Repos with
+nothing going on are left out of "repos" but still feed the commit timeline.
+Huge checkouts (nixpkgs) skip the working-tree scan so the deck opens fast.
+"""
+
+import hashlib
+import json
+import os
+import subprocess
+import time
+from pathlib import Path
+
+HOME = Path.home()
+NIXOS = HOME / "nixos"
+INPUTS = {HOME / "src/jantar": "jantar", HOME / "nixos-intel-npu": "nixos-intel-npu", HOME / "src/misra": "misra"}
+RECENT = 14 * 86400          # a repo touched within two weeks gets a tile
+BIG_INDEX = 5_000_000        # bytes of .git/index above which the working tree isn't scanned
+
+
+def git(repo, *args):
+    # --no-optional-locks: `git status` must not take index.lock, or a Commit clicked
+    # while the deck refreshes fails with "index.lock exists"
+    r = subprocess.run(["git", "--no-optional-locks", "-C", str(repo), *args], capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def ago(ts):
+    s = int(time.time() - ts)
+    for unit, n in (("d", 86400), ("h", 3600), ("m", 60)):
+        if s >= n:
+            return f"{s // n}{unit}"
+    return "now"
+
+
+def repos():
+    out = [NIXOS, HOME / "dotfiles", HOME / "nixos-intel-npu"]
+    out += sorted(p for p in (HOME / "src").iterdir() if (p / ".git").exists())
+    return [p for p in out if (p / ".git").exists()]
+
+
+def manifest(repo, paths):
+    """path -> sha256 for files under paths, skipping names starting with '.' (as `ship`)."""
+    files = {}
+    for p in paths.split():
+        base = repo / p
+        cand = [base] if base.is_file() else (sorted(base.rglob("*")) if base.is_dir() else [])
+        for f in cand:
+            if f.is_file() and not f.name.startswith("."):
+                files[str(f.relative_to(repo))] = hashlib.sha256(f.read_bytes()).hexdigest()
+    return files
+
+
+def ship_info(repo):
+    spec = repo / ".ship"
+    if not spec.exists():
+        return None
+    targets = []
+    for line in spec.read_text().splitlines():
+        parts = [x.strip() for x in line.split("|")]
+        if len(parts) < 3 or not parts[0] or parts[0].startswith(("#", "@")):
+            continue
+        name, cmd, paths = parts[0], parts[1], parts[2]
+        now = manifest(repo, paths)
+        saved_file = repo / ".git/ship" / f"{name}.manifest"
+        if saved_file.exists():
+            saved = dict(l.split(" ", 1) for l in saved_file.read_text().splitlines() if " " in l)
+            changed = sorted([f for f in now if saved.get(f) != now[f]] + [f for f in saved if f not in now])
+            first = False
+        else:
+            changed, first = sorted(now), True
+        targets.append({"name": name, "cmd": cmd, "count": len(changed), "changed": changed[:8], "first": first})
+    note = repo / ".git/DEPLOY_DRAFT"
+    return {"note": note.read_text().strip() if note.exists() else "", "targets": targets}
+
+
+def repo_info(repo):
+    log = git(repo, "log", "-20", "--format=%h\x1f%ct\x1f%s")
+    commits = []
+    for l in (log or "").splitlines():
+        h, ts, s = l.split("\x1f", 2)
+        commits.append({"hash": h, "ts": int(ts), "ago": ago(int(ts)), "subject": s})
+    draft_file = repo / ".git/COMMIT_DRAFT"
+    draft = None
+    if draft_file.exists():
+        lines = draft_file.read_text().strip().splitlines()
+        body = [l for l in lines[1:] if l.strip() and not l.startswith("Co-Authored-By")]
+        draft = {"subject": lines[0] if lines else "", "body": " ".join(body)[:400]}
+    staged = []
+    for l in (git(repo, "diff", "--cached", "--numstat") or "").splitlines():
+        a, d, f = l.split("\t", 2)
+        staged.append({"file": f, "add": a, "del": d})
+    ahead = behind = None
+    lr = git(repo, "rev-list", "--left-right", "--count", "@{u}...HEAD")
+    if lr:
+        behind, ahead = (int(x) for x in lr.split())
+    dirty, dirty_files = None, []
+    index = repo / ".git/index"
+    if index.exists() and index.stat().st_size < BIG_INDEX:
+        # porcelain "XY path": X = staged, Y = working tree; keep what isn't only staged
+        lines = (git(repo, "status", "--porcelain") or "").splitlines()
+        dirty_files = [l[3:] for l in lines if l[1] != " " or l.startswith("??")]
+        dirty = len(dirty_files)
+    return {
+        "path": str(repo), "name": repo.name if repo.parent != HOME else "~/" + repo.name,
+        "branch": git(repo, "branch", "--show-current") or "(detached)",
+        "ahead": ahead, "behind": behind, "dirty": dirty, "dirty_files": dirty_files[:12],
+        "input": INPUTS.get(repo), "draft": draft, "staged": staged,
+        "commits": commits, "ship": ship_info(repo),
+    }
+
+
+def system():
+    gen = os.path.basename(os.readlink("/nix/var/nix/profiles/system")).split("-")[1]
+    return {"generation": gen, "running": os.readlink("/run/current-system"),
+            "head": git(NIXOS, "log", "-1", "--format=%h %s") or ""}
+
+
+def main():
+    now = time.time()
+    infos = [repo_info(r) for r in repos()]
+    tiles, timeline = [], []
+    for i in infos:
+        ship_pending = sum(t["count"] for t in (i["ship"] or {}).get("targets", []))
+        recent = bool(i["commits"]) and now - i["commits"][0]["ts"] < RECENT
+        i["active"] = bool(i["draft"] or i["staged"] or (i["ahead"] or 0) or ship_pending or (i["dirty"] or 0))
+        if i["active"] or recent or i["path"] == str(NIXOS):
+            tiles.append(i)
+        timeline += [{"repo": i["name"], **c} for c in i["commits"] if now - c["ts"] < RECENT]
+    # busiest first: drafts and staged work, then unpushed, then by last commit
+    tiles.sort(key=lambda i: (not i["draft"], not i["staged"], not (i["ahead"] or 0),
+                              -(i["commits"][0]["ts"] if i["commits"] else 0)))
+    timeline.sort(key=lambda c: -c["ts"])
+    print(json.dumps({"system": system(), "repos": tiles, "timeline": timeline[:40]}))
+
+
+if __name__ == "__main__":
+    main()

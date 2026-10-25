@@ -9,15 +9,20 @@
 #   3. commit ~/nixos, switch to it (password through polkit: pkexec), then push it.
 # With no drafts waiting it shows the recent commits and offers to switch to ~/nixos as it is.
 # LAND_EMBED=1 (how `ship` runs it first): only the drafts; no recent-commits view, no closing key.
+#
+# One step at a time (the quickshell deck, Super+F12, runs these; a click is the "yes"):
+#   land commit|bump|push|discard REPO  ·  land switch  ·  land needs-switch
+# LAND_YES=1 answers every question yes and skips the "press Enter" pauses.
 set -u
 notify() {
+  [[ -n "${LAND_YES:-}" ]] && return   # the deck shows the result on the tile; no pile of cards
   set -- "$1" "$(date +%H:%M) · $2" "${3:-6000}"   # timestamp every notification
   if command -v notify-send >/dev/null; then notify-send -a git -t "${3:-6000}" "$1" "$2"
   else gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications \
     --method org.freedesktop.Notifications.Notify "git" 0 "" "$1" "$2" "[]" "{}" "${3:-6000}" >/dev/null 2>&1; fi
 }
-ask() { local ans; read -rp "$1 [y/N] " ans; [[ "$ans" == [yY]* ]]; }
-pause() { read -rp "Press Enter to continue." _; }
+ask() { [[ -n "${LAND_YES:-}" ]] && { echo "$1 yes"; return 0; }; local ans; read -rp "$1 [y/N] " ans; [[ "$ans" == [yY]* ]]; }
+pause() { [[ -n "${LAND_YES:-}" ]] && return; read -rp "Press Enter to continue." _; }
 
 nixos="$HOME/nixos"
 # Repos ~/nixos takes as flake inputs: path -> input name.
@@ -134,6 +139,28 @@ switch_nixos() {
       return 1 ;;
   esac
 }
+
+# ---- one-step subcommands (exit codes: 0 done, 1 not done) ----
+if [[ $# -gt 0 ]]; then
+  r="${2:-}"; r="${r%/}"
+  case "$1" in
+    commit)       has_draft "$r" || { echo "No draft in $r."; exit 1; }
+                  git -C "$r" diff --cached --quiet && { echo "Nothing staged in $r; the draft stays (discard it with: land discard)."; exit 1; }
+                  commit_repo "$r" || exit 1
+                  # a flake input's commit is only half the job: the deck offers Bump next
+                  exit 0 ;;
+    bump)         [[ -n "${inputs[$r]:-}" ]] || { echo "$r is not a ~/nixos flake input."; exit 1; }
+                  bump_nixos "$r" "${inputs[$r]}"
+                  git -C "$nixos" diff --cached --quiet -- flake.lock && exit 1 || exit 0 ;;
+    push)         printf '\e[2mgit push\e[0m\n'
+                  if git -C "$r" push; then notify "Pushed ${r/#"$HOME"/\~} ✓" "$(git -C "$r" log --oneline -1)"; exit 0; fi
+                  notify "Push failed: ${r/#"$HOME"/\~} ✗" "See the deck." 0; exit 1 ;;
+    discard)      rm -f "$r/.git/COMMIT_DRAFT" && notify "Removed draft" "${r/#"$HOME"/\~}"; exit 0 ;;
+    switch)       switch_nixos; exit $? ;;
+    needs-switch) needs_switch; exit $? ;;
+    *)            echo "usage: land [commit|bump|push|discard REPO | switch | needs-switch]"; exit 2 ;;
+  esac
+fi
 
 work=0
 for r in "${others[@]}"; do

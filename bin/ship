@@ -16,12 +16,18 @@
 #                                  window in the browser, so you read it and press Send yourself
 #     @from you@example.com        which signed-in Gmail account the compose window opens in
 # Runs are logged to <repo>/ops/logs/ when that exists (else $XDG_STATE_HOME/ship/).
+#
+# One target at a time (the quickshell deck, Super+F12/F11, runs this; a click is the "yes"):
+#   ship target REPO NAME     deploy it, then the changelog entry as above
+# LAND_YES=1 answers every question yes, except the interactive re-login, which needs a
+# terminal: then it stops and says to run `ship` there (Super+Shift+F11).
 set -u
 notify() {
+  [[ -n "${LAND_YES:-}" ]] && return   # the deck shows the result on the tile
   if command -v notify-send >/dev/null; then notify-send -a ship -t "${3:-6000}" "$1" "$(date +%H:%M) · $2"; fi
 }
-ask() { local ans; read -rp "$1 [y/N] " ans; [[ "$ans" == [yY]* ]]; }
-pause() { read -rp "Press Enter to close." _; }
+ask() { [[ -n "${LAND_YES:-}" ]] && { echo "$1 yes"; return 0; }; local ans; read -rp "$1 [y/N] " ans; [[ "$ans" == [yY]* ]]; }
+pause() { [[ -n "${LAND_YES:-}" ]] && return; read -rp "Press Enter to close." _; }
 
 # path + sha256 of every file under the target's paths (git-ignored files too: hosting ships them)
 manifest() { (cd "$1" && find $2 -type f ! -name '.*' -print0 2>/dev/null | sort -z | xargs -0r sha256sum | awk '{print $2, $1}'); }
@@ -58,6 +64,11 @@ ship_target() {
     fi
     (( try == 1 )) && fix=$(reauth_fix "$log") || break
     printf '\n\e[1m%s needs a fresh login.\e[0m\n' "$name"
+    if [[ -n "${LAND_YES:-}" ]]; then
+      echo "NEEDS LOGIN: run \`$fix\`, or ship from a terminal (Super+Shift+F11)."
+      notify "Ship needs a login: $name" "$rname: run ship in a terminal (Super+Shift+F11)." 0
+      return 1
+    fi
     ask "Run \`$fix\` here (opens the browser), then retry?" || break
     echo "# $(date -Is) reauth: $fix, then retry" >> "$log"
     (cd "$repo" && bash -c "$fix") || break   # interactive, so not piped through tee
@@ -111,6 +122,19 @@ print("https://mail.google.com/mail/?view=cm&fs=1&" + u.urlencode({"to": to, "su
   xdg-open "$url" >/dev/null 2>&1 & disown
   echo "Opened the email in the browser: read it, then Send."
 }
+
+if [[ "${1:-}" == target ]]; then
+  repo="${2%/}" want="${3:-}" went=()
+  [[ -f "$repo/.ship" ]] || { echo "No .ship in $repo."; exit 2; }
+  while IFS='|' read -r name cmd paths; do
+    name=$(echo $name); [[ "$name" == "$want" ]] || continue
+    if ship_target "$repo" "$name" "$(echo $cmd)" "$(echo $paths)"; then
+      changelog "$repo"; rm -f "$repo/.git/DEPLOY_DRAFT"; exit 0
+    fi
+    exit 1
+  done < "$repo/.ship"
+  echo "No target $want in $repo/.ship."; exit 2
+fi
 
 drafts() { compgen -G "$HOME/src/*/.git/COMMIT_DRAFT" >/dev/null || compgen -G "$HOME/dotfiles/.git/COMMIT_DRAFT" >/dev/null ||
            compgen -G "$HOME/nixos/.git/COMMIT_DRAFT" >/dev/null || compgen -G "$HOME/nixos-intel-npu/.git/COMMIT_DRAFT" >/dev/null; }
