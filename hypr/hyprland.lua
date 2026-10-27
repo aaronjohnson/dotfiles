@@ -359,6 +359,8 @@ local closeWindowBind = hl.bind(mainMod .. " + C", hl.dsp.window.close(), { desc
 hl.bind(mainMod .. " + M", hl.dsp.exec_cmd("command -v hyprshutdown >/dev/null 2>&1 && hyprshutdown || hyprctl dispatch 'hl.dsp.exit()'"), { description = "Session: Log out of Hyprland" })
 hl.bind(mainMod .. " + E", hl.dsp.exec_cmd(fileManager), { description = "Apps: File manager" })
 hl.bind(mainMod .. " + B", hl.dsp.exec_cmd("epiphany"), { description = "Apps: Web browser" })
+-- Super+F: play khel (~/src/khel), restarting it if it's already running.
+hl.bind(mainMod .. " + F", hl.dsp.exec_cmd("~/dotfiles/bin/khel"), { description = "Apps: Play khel (restarts it)" })
 -- Super+O: open a link (quickshell OpenPopup.qml): clipboard URL, pinned, most visited, recent.
 hl.bind(mainMod .. " + O", hl.dsp.exec_cmd("qs ipc call open toggle"), { description = "Apps: Open a link (pinned, most visited, recent)" })
 

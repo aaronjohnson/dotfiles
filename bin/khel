@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# khel: play the game in ~/src/khel. Super+F in Hyprland.
+#
+# Always a fresh start: if the game's already running (from here) it's
+# closed first, so a press plays the latest files. That's the "reload".
+# It opens on the first empty workspace (1-10), out of the way of
+# whatever's open. In the game, Esc quits.
+#     khel                  play
+#     khel --hour=22        anything after it goes to the game (Trip reads --hour= and --lights)
+set -euo pipefail
+dir=${KHEL_DIR:-$HOME/src/khel}
+pkill -f -- '--from-khel-launcher' 2>/dev/null && sleep 0.3 || true
+
+if command -v hyprctl >/dev/null && hyprctl version >/dev/null 2>&1; then
+  empty=$(hyprctl workspaces -j | python3 -c '
+import json, sys
+busy = {w["id"] for w in json.load(sys.stdin) if w["windows"] > 0}
+print(next((i for i in range(1, 11) if i not in busy), ""))')
+  [ -n "$empty" ] && hyprctl dispatch "hl.dsp.focus({ workspace = $empty })" >/dev/null
+fi
+exec godot --path "$dir" -- --from-khel-launcher "$@"
