@@ -7,8 +7,12 @@
 # whatever's open. In the game, Esc quits.
 #     khel                  play
 #     khel --hour=22        anything after it goes to the game (Trip reads --hour= and --lights)
+#     khel serve            build it and hand it to the Steam Deck over Wi-Fi (Ctrl+C stops)
 set -euo pipefail
 dir=${KHEL_DIR:-$HOME/src/khel}
+if [ "${1:-}" = serve ]; then
+  cd "$dir" && exec nix develop -c tools/serve-deck.sh
+fi
 pkill -f -- '--from-khel-launcher' 2>/dev/null && sleep 0.3 || true
 
 if command -v hyprctl >/dev/null && hyprctl version >/dev/null 2>&1; then
