@@ -8,10 +8,12 @@
 #     khel                  play
 #     khel --hour=22        anything after it goes to the game (Trip reads --hour= and --lights)
 #     khel serve            build it and hand it to the Steam Deck over Wi-Fi (Ctrl+C stops)
+#     khel serve --watch    and build again on each save; the Deck takes it when khel next starts
 set -euo pipefail
 dir=${KHEL_DIR:-$HOME/src/khel}
 if [ "${1:-}" = serve ]; then
-  cd "$dir" && exec nix develop -c tools/serve-deck.sh
+  shift
+  cd "$dir" && exec nix develop -c tools/serve-deck.sh "$@"
 fi
 pkill -f -- '--from-khel-launcher' 2>/dev/null && sleep 0.3 || true
 
