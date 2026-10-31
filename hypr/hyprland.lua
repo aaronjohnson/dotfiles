@@ -43,7 +43,7 @@ hl.monitor({
 -- laptop keeps running. Rules for an output merge, so turning the panel back on needs
 -- disabled = false.
 local laptop = "eDP-1"
-local panel_side = "left"   -- "left" or "right" of the external screen
+local panel_side = "right"  -- "left" or "right" of the external screen
 
 local function lid_closed()
   local f = io.open("/proc/acpi/button/lid/LID0/state")
@@ -52,18 +52,20 @@ local function lid_closed()
   return s:find("closed") ~= nil
 end
 
-local function arrange()
+local function arrange(force)
   local ext, panel
   for _, m in ipairs(hl.get_monitors()) do
     if m.name == laptop then panel = m else ext = ext or m end
   end
   local on = { output = laptop, disabled = false, mode = "preferred", scale = "auto" }
   if not ext then   -- laptop alone: always on, at the origin
-    if not panel or panel.x ~= 0 then on.position = "0x0"; hl.monitor(on) end
+    if force or not panel or panel.x ~= 0 then on.position = "0x0"; hl.monitor(on) end
     return
   end
-  -- only change what differs: each change re-fires monitor.added / monitor.removed
-  if ext.x ~= 0 or ext.y ~= 0 then
+  -- only change what differs: each change re-fires monitor.added / monitor.removed.
+  -- On a config reload (force) every rule is set, else the catch-all "auto" rule above
+  -- would place an output that has no rule of its own.
+  if force or ext.x ~= 0 or ext.y ~= 0 then
     hl.monitor({ output = ext.name, mode = "preferred", position = "0x0", scale = "auto" })
   end
   -- logical sizes; the panel's is known once it's on (2880x1920 at scale 2 -> 1440x960)
@@ -74,7 +76,7 @@ local function arrange()
   local y = math.max(0, ext_h - pan_h)          -- bottom edges level
   if lid_closed() then
     if panel then hl.monitor({ output = laptop, disabled = true }) end
-  elseif not panel or panel.x ~= x or panel.y ~= y then
+  elseif force or not panel or panel.x ~= x or panel.y ~= y then
     on.position = x .. "x" .. y; hl.monitor(on)
   end
   -- the panel shows 6 first, else Hyprland fills its gap with a new low workspace
@@ -86,7 +88,7 @@ local function arrange()
   hl.dispatch(hl.dsp.focus({ monitor = ext.name }))
 end
 
-arrange()                              -- on every config reload
+arrange(true)                          -- on every config reload
 hl.on("hyprland.start", arrange)
 hl.on("monitor.added", arrange)
 hl.on("monitor.removed", arrange)
