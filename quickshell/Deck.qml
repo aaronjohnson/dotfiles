@@ -402,10 +402,13 @@ Scope {
                 focus: true
                 Keys.onPressed: event => {
                     if (event.key === Qt.Key_Escape) deck.hide();
-                    else if (event.key === Qt.Key_Y || event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                    else if (event.key === Qt.Key_Y) {
                         if (deck.needsLogin) deck.logIn(); else deck.yes();
                     }
-                    else if (event.key === Qt.Key_A) { if (!deck.needsLogin) deck.all(); }
+                    // Enter is A (the whole queue); during a login it's the login, like Y
+                    else if (event.key === Qt.Key_A || event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                        if (deck.needsLogin) deck.logIn(); else deck.all();
+                    }
                     else if (event.key === Qt.Key_N || event.key === Qt.Key_Space) deck.no();
                     else if (event.key === Qt.Key_R) { deck.refresh(); deck.checkSwitch(); }
                     else return;
@@ -417,7 +420,7 @@ Scope {
                     theme: deck.theme
                     title: "Land · Ship"
                     detail: "Super+F12"
-                    hint: "Y run next · N skip · A all, then status · or click a chip · R refresh · Esc close · terminal: Super+Shift+F12"
+                    hint: "Y run next · N skip · A or Enter all, then status · or click a chip · R refresh · Esc close · terminal: Super+Shift+F12"
                 }
 
                 // ---- system strip ----
@@ -479,7 +482,7 @@ Scope {
                         Chip {
                             visible: !!deck.nextStep && !deck.needsLogin && !deck.auto
                             anchors.verticalCenter: parent.verticalCenter
-                            text: "A  all"; tone: deck.theme.surface; textColor: deck.theme.violet; filled: true; action: true
+                            text: "A ⏎  all"; tone: deck.theme.surface; textColor: deck.theme.violet; filled: true; action: true
                             enabledAction: deck.idle
                             onClicked: deck.all()
                         }
@@ -771,7 +774,7 @@ Scope {
                                 }
                                 Chip {
                                     visible: !!deck.nextStep && !deck.needsLogin && !deck.auto
-                                    text: "A  all"; tone: deck.theme.violet; filled: true; action: true
+                                    text: "A ⏎  all"; tone: deck.theme.violet; filled: true; action: true
                                     enabledAction: deck.idle
                                     onClicked: deck.all()
                                 }
