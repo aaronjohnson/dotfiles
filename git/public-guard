@@ -35,7 +35,7 @@ from pathlib import Path
 TERMS = Path.home() / ".config/git/private-terms.txt"
 TTL = 86400
 EMAIL = re.compile(r"[\w.+-]+@[\w-]+(\.[\w-]+)+")
-EMAIL_OK = re.compile(r"(noreply|no-reply|example\.(com|org|net)|localhost|users\.noreply\.github\.com)", re.I)
+EMAIL_OK = re.compile(r"(noreply|no-reply|example\.(com|org|net)|localhost|\.local$|users\.noreply\.github\.com)", re.I)
 
 
 def git(*args):
