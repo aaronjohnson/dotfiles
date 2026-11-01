@@ -365,6 +365,9 @@ hl.bind(mainMod .. " + B", hl.dsp.exec_cmd("epiphany"), { description = "Apps: W
 hl.bind(mainMod .. " + F", hl.dsp.exec_cmd("~/dotfiles/bin/khel"), { description = "Apps: Play khel (restarts it)" })
 -- Super+O: open a link (quickshell OpenPopup.qml): clipboard URL, pinned, most visited, recent.
 hl.bind(mainMod .. " + O", hl.dsp.exec_cmd("qs ipc call open toggle"), { description = "Apps: Open a link (pinned, most visited, recent)" })
+-- Super+A: old-time radio (bin/otr): a tofi menu of shows, then a random episode streamed
+-- from the Internet Archive; `just stop` (or picking another) stops it.
+hl.bind(mainMod .. " + A", hl.dsp.exec_cmd("~/dotfiles/bin/otr"), { description = "Apps: Old-time radio: pick a show, hear a random episode" })
 
 -- Alt+C / Alt+V copy and paste in any window (Chromebook/Mac habit). Terminals use
 -- Ctrl+Shift+C/V for copy/paste, since Ctrl+C there means "interrupt".
