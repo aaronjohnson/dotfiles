@@ -57,7 +57,12 @@ def play(name):
         f.write(url + "\n")
     subprocess.run(["pkill", "-x", "ffplay"], check=False)   # one show at a time
     say(what.split(" · ")[0], os.path.splitext(ep)[0])
-    subprocess.run(["ffplay", "-nodisp", "-autoexit", "-loglevel", "error", url])
+    # -f mp3: some of these files' ID3 tags make ffplay's probe take them for WAV and give up
+    done = subprocess.run(["ffplay", "-nodisp", "-autoexit", "-loglevel", "error", "-f", "mp3", url],
+                          stderr=subprocess.PIPE, text=True)
+    if done.returncode not in (0, -15):   # -15: stopped by pkill (just stop, or the next pick)
+        lines = (done.stderr or "").strip().splitlines()
+        say("otr: couldn't play it", lines[-1] if lines else f"ffplay exit {done.returncode}")
 
 
 def keep():
