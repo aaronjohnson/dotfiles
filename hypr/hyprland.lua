@@ -458,6 +458,13 @@ hl.bind("XF86AudioMute",        hl.dsp.exec_cmd("wpctl set-mute @DEFAULT_AUDIO_S
 hl.bind("XF86AudioMicMute",     hl.dsp.exec_cmd("wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle"),   { locked = true, repeating = true, description = "Media: Mute microphone" })
 hl.bind("XF86MonBrightnessUp",  hl.dsp.exec_cmd("brightnessctl -e4 -n2 set 5%+"),                  { locked = true, repeating = true, description = "Media: Brightness up / down" })
 hl.bind("XF86MonBrightnessDown",hl.dsp.exec_cmd("brightnessctl -e4 -n2 set 5%-"),                  { locked = true, repeating = true, description = "Media: Brightness up / down" })
+-- F7 / F8 with no Fn (the top row types F-keys; its sun symbols sit behind Fn): the screen,
+-- as above (auto-brightness learns the change rather than undoing it). With Alt: the
+-- keyboard backlight. Super+F7 / Super+F8 stay privacy and auto-brightness.
+hl.bind("F7",       hl.dsp.exec_cmd("brightnessctl -e4 -n2 set 5%-"), { locked = true, repeating = true, description = "Media: F7 / F8: screen dimmer / brighter" })
+hl.bind("F8",       hl.dsp.exec_cmd("brightnessctl -e4 -n2 set 5%+"), { locked = true, repeating = true, description = "Media: F7 / F8: screen dimmer / brighter" })
+hl.bind("ALT + F7", hl.dsp.exec_cmd("brightnessctl -d chromeos::kbd_backlight set 10%-"), { locked = true, repeating = true, description = "Media: Alt+F7 / F8: keyboard light dimmer / brighter" })
+hl.bind("ALT + F8", hl.dsp.exec_cmd("brightnessctl -d chromeos::kbd_backlight set 10%+"), { locked = true, repeating = true, description = "Media: Alt+F7 / F8: keyboard light dimmer / brighter" })
 
 -- Requires playerctl. bin/media: with an old-time radio show on (bin/otr, in mpv), next and
 -- previous skip 30 s forward/back; otherwise they're the player's next/previous track.
