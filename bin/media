@@ -1,0 +1,13 @@
+#!/bin/sh
+# media play-pause|next|previous: the media keys (hyprland.lua, no modifier).
+# When an old-time radio show is on (bin/otr plays it in mpv), they act on it:
+# play/pause it, and next/previous skip 30 seconds forward/back, since a radio
+# show is one long track. Otherwise they go to whatever player playerctl finds.
+if playerctl -p mpv status >/dev/null 2>&1; then
+    case "$1" in
+        next)     exec playerctl -p mpv position 30+ ;;
+        previous) exec playerctl -p mpv position 30- ;;
+        *)        exec playerctl -p mpv "$1" ;;
+    esac
+fi
+exec playerctl "$1"

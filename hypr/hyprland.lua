@@ -459,11 +459,12 @@ hl.bind("XF86AudioMicMute",     hl.dsp.exec_cmd("wpctl set-mute @DEFAULT_AUDIO_S
 hl.bind("XF86MonBrightnessUp",  hl.dsp.exec_cmd("brightnessctl -e4 -n2 set 5%+"),                  { locked = true, repeating = true, description = "Media: Brightness up / down" })
 hl.bind("XF86MonBrightnessDown",hl.dsp.exec_cmd("brightnessctl -e4 -n2 set 5%-"),                  { locked = true, repeating = true, description = "Media: Brightness up / down" })
 
--- Requires playerctl
-hl.bind("XF86AudioNext",  hl.dsp.exec_cmd("playerctl next"),       { locked = true, description = "Media: Next / previous track" })
-hl.bind("XF86AudioPause", hl.dsp.exec_cmd("playerctl play-pause"), { locked = true, description = "Media: Play / pause" })
-hl.bind("XF86AudioPlay",  hl.dsp.exec_cmd("playerctl play-pause"), { locked = true, description = "Media: Play / pause" })
-hl.bind("XF86AudioPrev",  hl.dsp.exec_cmd("playerctl previous"),   { locked = true, description = "Media: Next / previous track" })
+-- Requires playerctl. bin/media: with an old-time radio show on (bin/otr, in mpv), next and
+-- previous skip 30 s forward/back; otherwise they're the player's next/previous track.
+hl.bind("XF86AudioNext",  hl.dsp.exec_cmd("~/dotfiles/bin/media next"),       { locked = true, repeating = true, description = "Media: Next / previous track (radio: 30 s on / back)" })
+hl.bind("XF86AudioPause", hl.dsp.exec_cmd("~/dotfiles/bin/media play-pause"), { locked = true, description = "Media: Play / pause" })
+hl.bind("XF86AudioPlay",  hl.dsp.exec_cmd("~/dotfiles/bin/media play-pause"), { locked = true, description = "Media: Play / pause" })
+hl.bind("XF86AudioPrev",  hl.dsp.exec_cmd("~/dotfiles/bin/media previous"),   { locked = true, repeating = true, description = "Media: Next / previous track (radio: 30 s on / back)" })
 
 -- Power button: tap to lock, hold for the power menu (logind ignores the key, see
 -- ~/nixos/power.nix). Not locked: on the lock screen the button does nothing.

@@ -17,7 +17,7 @@ play is a line in ~/Music/radio/listened.tsv (when, show, episode). The episode'
 name goes to a mako card as well as the terminal, so the menu works from a key
 binding too. ~/justfile wraps it: `just otr`, `just history`, `just stop`.
 """
-import datetime, json, os, random, subprocess, sys, urllib.parse, urllib.request
+import datetime, json, os, random, shutil, subprocess, sys, urllib.parse, urllib.request
 
 RADIO = os.path.expanduser("~/Music/radio")
 LOG = os.path.join(RADIO, "listened.tsv")
@@ -105,21 +105,35 @@ def play(name, ep=None, start=0):
     with open(LOG, "a") as f:
         f.write(f"{datetime.datetime.now():%Y-%m-%d %H:%M}\t{name}\t{ep}\n")
 
-    subprocess.run(["pkill", "-x", "ffplay"], check=False)   # one show at a time
+    stop()   # one show at a time
     say(what.split(" · ")[0], os.path.splitext(ep)[0] + ("  (saved copy)" if source == saved else "")
         + (f"  from {start} min" if start else ""))
-    # -f mp3: some of these files' ID3 tags make ffplay's probe take them for WAV and give up
-    done = subprocess.run(["ffplay", "-nodisp", "-autoexit", "-loglevel", "error", "-f", "mp3", "-ss", str(start * 60), source],
-                          stderr=subprocess.PIPE, text=True)
+    if shutil.which("mpv"):
+        # mpv with its MPRIS script: the media keys reach it (play/pause; bin/media makes
+        # previous/next skip 30 s back/forward), and the bar can show the title
+        title = what.split(" · ")[0] + " · " + os.path.splitext(ep)[0]
+        done = subprocess.run(["mpv", "--no-video", "--really-quiet", f"--start={start * 60}",
+                               f"--force-media-title={title}", source], stderr=subprocess.PIPE, text=True)
+        stopped = done.returncode == 4      # mpv's exit when killed (just stop, the next pick)
+    else:
+        # -f mp3: some of these files' ID3 tags make ffplay's probe take them for WAV and give up
+        done = subprocess.run(["ffplay", "-nodisp", "-autoexit", "-loglevel", "error", "-f", "mp3",
+                               "-ss", str(start * 60), source], stderr=subprocess.PIPE, text=True)
+        stopped = done.returncode in (123, -15)   # ffplay's exit on SIGTERM
     if done.returncode == 0:              # it ran to the end: the queue's next, if any
         q = queued()
         if q:
             with open(QUEUE, "w") as f:
                 f.writelines(f"{s}\t{e}\n" for s, e in q[1:])
             play(*q[0])
-    elif done.returncode not in (123, -15):   # 123: ffplay's exit on SIGTERM (just stop, the next pick)
+    elif not stopped:
         lines = (done.stderr or "").strip().splitlines()
         say("otr: couldn't play it", lines[-1] if lines else f"ffplay exit {done.returncode}")
+
+
+def stop():
+    for player in ("mpv", "ffplay"):
+        subprocess.run(["pkill", "-x", player], check=False)
 
 
 def history():
@@ -172,7 +186,7 @@ elif arg == "queue":
     for i, (show, ep) in enumerate(queued(), 1):
         print(f"  {i}. {show:9} {os.path.splitext(ep)[0]}")
 elif arg == "stop":
-    subprocess.run(["pkill", "-x", "ffplay"], check=False)
+    stop()
 elif arg in SHOWS:
     play(arg)
 elif arg == "":
