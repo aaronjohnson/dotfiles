@@ -136,7 +136,7 @@ Scope {
                          detail: nixos.ahead + " commit(s)", args: [land, "push", nixosPath] });
         for (const r of repos)
             for (const t of (r.ship ? r.ship.targets : []))
-                if (t.count > 0)
+                if (t.count > 0 && !t.held)    // a held target (.git/ship/NAME.hold) waits off the queue
                     steps.push({ key: "ship " + r.path + " " + t.name, repo: r.path, label: "Ship " + t.name,
                                  short: "Ship " + say(r) + " " + t.name, ask: "Ship " + t.name + " from " + say(r) + "?", detail: t.count + " file(s) changed",
                                  args: [ship, "target", r.path, t.name] });
@@ -998,9 +998,10 @@ Scope {
                                                 required property var modelData
                                                 width: tileCol.width
                                                 text: "⇪ " + modelData.name + ": " + (modelData.count === 0 ? "up to date"
+                                                    : modelData.held ? "held · " + modelData.held + " (" + modelData.count + " changed)"
                                                     : modelData.count + " changed" + (modelData.first ? " (first ship)" : "")
                                                       + "  ·  " + modelData.changed.slice(0, 3).join(", "))
-                                                color: modelData.count ? deck.theme.yellow : deck.theme.muted
+                                                color: modelData.count && !modelData.held ? deck.theme.yellow : deck.theme.muted
                                                 font.pixelSize: 11
                                                 elide: Text.ElideRight
                                             }
@@ -1045,7 +1046,7 @@ Scope {
                                                 onClicked: deck.run(r.path, "Push", [deck.land, "push", r.path])
                                             }
                                             Repeater {
-                                                model: tile.targets.filter(t => t.count > 0)
+                                                model: tile.targets.filter(t => t.count > 0 && !t.held)
                                                 Chip {
                                                     required property var modelData
                                                     text: "Ship " + modelData.name; tone: deck.theme.violet; filled: true; action: true

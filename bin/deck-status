@@ -93,7 +93,11 @@ def ship_info(repo):
             first = False
         else:
             changed, first = sorted(now), True
-        targets.append({"name": name, "cmd": cmd, "count": len(changed), "changed": changed[:8], "first": first})
+        # .git/ship/<name>.hold (its text says why): work in progress, kept off the deck's queue
+        hold = repo / ".git/ship" / f"{name}.hold"
+        held = (hold.read_text().strip() or "held") if hold.exists() else ""
+        targets.append({"name": name, "cmd": cmd, "count": len(changed), "changed": changed[:8], "first": first,
+                        "held": held})
     note = repo / ".git/DEPLOY_DRAFT"
     return {"note": note.read_text().strip() if note.exists() else "", "targets": targets}
 
@@ -173,7 +177,7 @@ def main():
     infos = [repo_info(r) for r in repos()]
     tiles, timeline = [], []
     for i in infos:
-        ship_pending = sum(t["count"] for t in (i["ship"] or {}).get("targets", []))
+        ship_pending = sum(t["count"] for t in (i["ship"] or {}).get("targets", []) if not t["held"])
         last = i["commits"][0]["ts"] if i["commits"] else 0
         recent = now - last < RECENT
         i["active"] = bool(i["draft"] or i["staged"] or (i["ahead"] or 0) or ship_pending or (i["dirty"] or 0)
