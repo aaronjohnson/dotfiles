@@ -175,7 +175,8 @@ Scope {
         }
         const byOrder = (a, b) => a.order - b.order;
         const rows = gs => gs.reduce((s, g) => s + 1 + g.repos.length, 0);   // headers + tiles
-        return { left: left.sort(byOrder), right: right.sort(byOrder), leftRows: rows(left), rightRows: rows(right) };
+        return { left: left.sort(byOrder), right: right.sort(byOrder), leftRows: rows(left), rightRows: rows(right),
+                 all: coolGroups, allRows: rows(coolGroups) };
     }
 
     function yes() {
@@ -367,6 +368,11 @@ Scope {
             WlrLayershell.keyboardFocus: WlrKeyboardFocus.Exclusive
             WlrLayershell.namespace: "deck"
 
+            // the laptop panel alone (1440 logical): one side column holding every group,
+            // ON DECK down the right, no timeline (each tile carries its own commits), the
+            // tiles scroll if they still don't fit
+            readonly property bool narrow: width < 1800
+
             Rectangle {
                 anchors.fill: parent
                 color: deck.theme.bg
@@ -379,8 +385,8 @@ Scope {
             Rectangle {
                 id: panel
                 anchors.centerIn: parent
-                width: parent.width - 100
-                height: parent.height - 100
+                width: parent.width - (win.narrow ? 40 : 100)
+                height: parent.height - (win.narrow ? 40 : 100)
                 radius: 10
                 color: deck.theme.surface
                 border.width: 1
@@ -586,16 +592,19 @@ Scope {
                     id: leftSide
                     anchors { top: rule.bottom; bottom: parent.bottom; left: parent.left; margins: 16; bottomMargin: 22 }
                     width: panel.width * 0.22
-                    groupsHere: deck.sides.left
-                    rowsHere: deck.sides.leftRows
+                    clip: true
+                    groupsHere: win.narrow ? deck.sides.all : deck.sides.left
+                    rowsHere: win.narrow ? deck.sides.allRows : deck.sides.leftRows
                 }
                 SideColumn {
                     id: rightSide
                     anchors { top: rule.bottom; bottom: onDeck.visible ? onDeck.top : parent.bottom; right: parent.right
                               margins: 16; bottomMargin: onDeck.visible ? 12 : 22 }
-                    width: panel.width * 0.22
-                    groupsHere: deck.sides.right
-                    rowsHere: deck.sides.rightRows
+                    width: win.narrow ? 0 : panel.width * 0.22
+                    visible: !win.narrow
+                    clip: true
+                    groupsHere: win.narrow ? [] : deck.sides.right
+                    rowsHere: win.narrow ? 0 : deck.sides.rightRows
                 }
 
                 // ---- ON DECK: the queue as a table, lower right ----
@@ -786,7 +795,8 @@ Scope {
                 Rectangle {
                     id: timeline
                     anchors { bottom: parent.bottom; left: leftSide.right; right: rightSide.left; margins: 16; bottomMargin: 22 }
-                    height: (panel.height - rule.y) * 0.34
+                    height: win.narrow ? 0 : (panel.height - rule.y) * 0.34
+                    visible: !win.narrow
                     radius: 8
                     color: deck.theme.bg
                     opacity: 0.92
@@ -830,7 +840,8 @@ Scope {
                 // ---- hot tiles: the middle, above the timeline ----
                 Item {
                     id: tilesArea
-                    anchors { top: rule.bottom; bottom: timeline.top; left: leftSide.right; right: rightSide.left; margins: 16; bottomMargin: 12 }
+                    anchors { top: rule.bottom; bottom: win.narrow ? parent.bottom : timeline.top; left: leftSide.right
+                              right: win.narrow ? onDeck.left : rightSide.left; margins: 16; bottomMargin: win.narrow ? 22 : 12 }
                     // columns: as many as fit at >= 330 px, but the count that leaves the
                     // fewest empty cells in the last row (10 tiles: 5 x 2, not 4 + 4 + 2)
                     readonly property int cols: {
@@ -849,257 +860,266 @@ Scope {
                     readonly property int rows: Math.max(1, Math.ceil(deck.hotRepos.length / cols))
                     readonly property real tileH: (height - (rows - 1) * 12) / rows
 
-                    Flow {
+                    Flickable {
                         anchors.fill: parent
-                        spacing: 12
+                        contentHeight: tilesFlow.childrenRect.height
+                        interactive: contentHeight > height
+                        boundsBehavior: Flickable.StopAtBounds
+                        clip: true
 
-                        Repeater {
-                            model: deck.hotRepos
+                        Flow {
+                            id: tilesFlow
+                            width: parent.width
+                            spacing: 12
 
-                            Rectangle {
-                                id: tile
-                                required property var modelData
-                                readonly property var r: modelData
-                                readonly property bool busy: deck.busyRepo === r.path
-                                readonly property var result: deck.results[r.path]
-                                readonly property var targets: r.ship ? r.ship.targets : []
-                                width: tilesArea.tileW
-                                height: Math.max(tilesArea.tileH, tileCol.implicitHeight + 24)
-                                clip: true
-                                radius: 8
-                                color: r.active ? deck.theme.bg : "transparent"
-                                // the tile the NEXT question is about
-                                readonly property bool isNext: !!deck.nextStep && deck.nextStep.repo === r.path
-                                border.width: busy || isNext ? 2 : 1
-                                border.color: busy || isNext ? deck.theme.violet
-                                    : r.draft ? deck.theme.yellow
-                                    : r.active ? deck.theme.dim : deck.theme.muted
-                                opacity: r.active || busy ? 1 : 0.75
+                            Repeater {
+                                model: deck.hotRepos
 
-                                Column {
-                                    id: tileCol
-                                    anchors { top: parent.top; left: parent.left; right: parent.right; margins: 12 }
-                                    spacing: 7
+                                Rectangle {
+                                    id: tile
+                                    required property var modelData
+                                    readonly property var r: modelData
+                                    readonly property bool busy: deck.busyRepo === r.path
+                                    readonly property var result: deck.results[r.path]
+                                    readonly property var targets: r.ship ? r.ship.targets : []
+                                    width: tilesArea.tileW
+                                    height: Math.max(tilesArea.tileH, tileCol.implicitHeight + 24)
+                                    clip: true
+                                    radius: 8
+                                    color: r.active ? deck.theme.bg : "transparent"
+                                    // the tile the NEXT question is about
+                                    readonly property bool isNext: !!deck.nextStep && deck.nextStep.repo === r.path
+                                    border.width: busy || isNext ? 2 : 1
+                                    border.color: busy || isNext ? deck.theme.violet
+                                        : r.draft ? deck.theme.yellow
+                                        : r.active ? deck.theme.dim : deck.theme.muted
+                                    opacity: r.active || busy ? 1 : 0.75
 
-                                    // name, branch, sync state
-                                    Flow {
-                                        width: parent.width
-                                        spacing: 6
-                                        Text {
-                                            text: r.name
-                                            color: deck.theme.fg
-                                            font.pixelSize: 15; font.bold: true
+                                    Column {
+                                        id: tileCol
+                                        anchors { top: parent.top; left: parent.left; right: parent.right; margins: 12 }
+                                        spacing: 7
+
+                                        // name, branch, sync state
+                                        Flow {
+                                            width: parent.width
+                                            spacing: 6
+                                            Text {
+                                                text: r.name
+                                                color: deck.theme.fg
+                                                font.pixelSize: 15; font.bold: true
+                                            }
+                                            Chip { text: r.branch; tone: deck.theme.cyan }
+                                            Chip { visible: (r.ahead || 0) > 0; text: "↑" + r.ahead + " unpushed"; tone: deck.theme.cyan }
+                                            Chip { visible: (r.behind || 0) > 0; text: "↓" + r.behind; tone: deck.theme.blue }
+                                            Chip { visible: (r.dirty || 0) > 0; text: r.dirty + " unstaged"; tone: deck.theme.muted }
+                                            Chip { visible: !!r.input; text: "flake input"; tone: deck.theme.violet }
                                         }
-                                        Chip { text: r.branch; tone: deck.theme.cyan }
-                                        Chip { visible: (r.ahead || 0) > 0; text: "↑" + r.ahead + " unpushed"; tone: deck.theme.cyan }
-                                        Chip { visible: (r.behind || 0) > 0; text: "↓" + r.behind; tone: deck.theme.blue }
-                                        Chip { visible: (r.dirty || 0) > 0; text: r.dirty + " unstaged"; tone: deck.theme.muted }
-                                        Chip { visible: !!r.input; text: "flake input"; tone: deck.theme.violet }
-                                    }
 
-                                    // CHANGELOG: the newest entry, above the commit history and louder than it
-                                    Rectangle {
-                                        visible: !!r.changelog
-                                        width: parent.width
-                                        height: visible ? clCol.implicitHeight + 12 : 0
-                                        radius: 6
-                                        color: Qt.alpha(deck.theme.yellow, 0.10)
-                                        border.width: 1
-                                        border.color: deck.theme.yellow
+                                        // CHANGELOG: the newest entry, above the commit history and louder than it
+                                        Rectangle {
+                                            visible: !!r.changelog
+                                            width: parent.width
+                                            height: visible ? clCol.implicitHeight + 12 : 0
+                                            radius: 6
+                                            color: Qt.alpha(deck.theme.yellow, 0.10)
+                                            border.width: 1
+                                            border.color: deck.theme.yellow
+                                            Column {
+                                                id: clCol
+                                                anchors { top: parent.top; left: parent.left; right: parent.right; margins: 6 }
+                                                spacing: 2
+                                                Text {
+                                                    width: parent.width
+                                                    text: r.changelog ? r.changelog.heading : ""
+                                                    color: deck.theme.yellow
+                                                    font.pixelSize: 14; font.bold: true
+                                                    wrapMode: Text.Wrap; maximumLineCount: 2; elide: Text.ElideRight
+                                                }
+                                                Text {
+                                                    width: parent.width
+                                                    text: r.changelog ? r.changelog.body : ""
+                                                    visible: text !== ""
+                                                    color: deck.theme.fg
+                                                    font.pixelSize: 12
+                                                    wrapMode: Text.Wrap; maximumLineCount: 4; elide: Text.ElideRight
+                                                }
+                                                Text {
+                                                    visible: !!r.changelog && !r.changelog.updated && (r.ahead || 0) > 0
+                                                    text: "↑" + (r.ahead || 0) + " to push, " + (r.changelog ? r.changelog.file : "") + " not touched"
+                                                    color: deck.theme.dim       // a quiet note, not an alarm
+                                                    font.pixelSize: 11
+                                                }
+                                            }
+                                        }
+
+                                        // drafted commit
                                         Column {
-                                            id: clCol
-                                            anchors { top: parent.top; left: parent.left; right: parent.right; margins: 6 }
+                                            visible: !!r.draft
+                                            width: parent.width
                                             spacing: 2
                                             Text {
                                                 width: parent.width
-                                                text: r.changelog ? r.changelog.heading : ""
+                                                text: r.draft ? r.draft.subject : ""
                                                 color: deck.theme.yellow
-                                                font.pixelSize: 14; font.bold: true
+                                                font.pixelSize: 13; font.bold: true
                                                 wrapMode: Text.Wrap; maximumLineCount: 2; elide: Text.ElideRight
                                             }
                                             Text {
                                                 width: parent.width
-                                                text: r.changelog ? r.changelog.body : ""
+                                                text: r.draft ? r.draft.body : ""
                                                 visible: text !== ""
-                                                color: deck.theme.fg
-                                                font.pixelSize: 12
-                                                wrapMode: Text.Wrap; maximumLineCount: 4; elide: Text.ElideRight
-                                            }
-                                            Text {
-                                                visible: !!r.changelog && !r.changelog.updated && (r.ahead || 0) > 0
-                                                text: "↑" + (r.ahead || 0) + " to push, " + (r.changelog ? r.changelog.file : "") + " not touched"
-                                                color: deck.theme.dim       // a quiet note, not an alarm
+                                                color: deck.theme.dim
                                                 font.pixelSize: 11
+                                                wrapMode: Text.Wrap; maximumLineCount: 3; elide: Text.ElideRight
                                             }
                                         }
-                                    }
 
-                                    // drafted commit
-                                    Column {
-                                        visible: !!r.draft
-                                        width: parent.width
-                                        spacing: 2
-                                        Text {
+                                        // staged files
+                                        Flow {
+                                            visible: r.staged.length > 0
                                             width: parent.width
-                                            text: r.draft ? r.draft.subject : ""
-                                            color: deck.theme.yellow
-                                            font.pixelSize: 13; font.bold: true
-                                            wrapMode: Text.Wrap; maximumLineCount: 2; elide: Text.ElideRight
+                                            spacing: 4
+                                            Repeater {
+                                                model: r.staged.slice(0, 6)
+                                                Chip {
+                                                    required property var modelData
+                                                    text: modelData.file.split("/").pop() + "  +" + modelData.add + " −" + modelData.del
+                                                    tone: deck.theme.green
+                                                }
+                                            }
+                                            Chip { visible: r.staged.length > 6; text: "+" + (r.staged.length - 6) + " more"; tone: deck.theme.green }
                                         }
+
+                                        // ship targets
+                                        Repeater {
+                                            model: tile.targets
+                                            Text {
+                                                required property var modelData
+                                                width: tileCol.width
+                                                text: "⇪ " + modelData.name + ": " + (modelData.count === 0 ? "up to date"
+                                                    : modelData.count + " changed" + (modelData.first ? " (first ship)" : "")
+                                                      + "  ·  " + modelData.changed.slice(0, 3).join(", "))
+                                                color: modelData.count ? deck.theme.yellow : deck.theme.muted
+                                                font.pixelSize: 11
+                                                elide: Text.ElideRight
+                                            }
+                                        }
+
+                                        // newest commit when nothing is drafted
                                         Text {
+                                            visible: !r.draft && r.commits.length > 0
                                             width: parent.width
-                                            text: r.draft ? r.draft.body : ""
-                                            visible: text !== ""
+                                            text: r.commits.length ? r.commits[0].hash + "  " + r.commits[0].subject + "  · " + r.commits[0].ago : ""
                                             color: deck.theme.dim
                                             font.pixelSize: 11
-                                            wrapMode: Text.Wrap; maximumLineCount: 3; elide: Text.ElideRight
+                                            elide: Text.ElideRight
                                         }
-                                    }
 
-                                    // staged files
-                                    Flow {
-                                        visible: r.staged.length > 0
-                                        width: parent.width
-                                        spacing: 4
-                                        Repeater {
-                                            model: r.staged.slice(0, 6)
+                                        // actions
+                                        Flow {
+                                            width: parent.width
+                                            spacing: 6
                                             Chip {
-                                                required property var modelData
-                                                text: modelData.file.split("/").pop() + "  +" + modelData.add + " −" + modelData.del
-                                                tone: deck.theme.green
+                                                visible: !!r.draft && r.staged.length > 0
+                                                text: "Commit"; tone: deck.theme.violet; filled: true; action: true
+                                                enabledAction: deck.idle
+                                                onClicked: deck.run(r.path, "Commit", [deck.land, "commit", r.path])
+                                            }
+                                            Chip {
+                                                visible: !!r.draft && r.staged.length === 0
+                                                text: "Discard stale draft"; tone: deck.theme.yellow; action: true
+                                                enabledAction: deck.idle
+                                                onClicked: deck.run(r.path, "Discard", [deck.land, "discard", r.path])
+                                            }
+                                            Chip {
+                                                visible: !!r.input && (r.ahead || 0) > 0
+                                                text: "Push + bump ~/nixos"; tone: deck.theme.violet; action: true
+                                                enabledAction: deck.idle
+                                                onClicked: deck.run(r.path, "Bump", [deck.land, "bump", r.path])
+                                            }
+                                            Chip {
+                                                visible: !r.input && (r.ahead || 0) > 0
+                                                text: "Push ↑" + r.ahead; tone: deck.theme.violet; action: true
+                                                enabledAction: deck.idle
+                                                onClicked: deck.run(r.path, "Push", [deck.land, "push", r.path])
+                                            }
+                                            Repeater {
+                                                model: tile.targets.filter(t => t.count > 0)
+                                                Chip {
+                                                    required property var modelData
+                                                    text: "Ship " + modelData.name; tone: deck.theme.violet; filled: true; action: true
+                                                    enabledAction: deck.idle
+                                                    onClicked: deck.run(r.path, "Ship " + modelData.name, [deck.ship, "target", r.path, modelData.name])
+                                                }
                                             }
                                         }
-                                        Chip { visible: r.staged.length > 6; text: "+" + (r.staged.length - 6) + " more"; tone: deck.theme.green }
-                                    }
 
-                                    // ship targets
-                                    Repeater {
-                                        model: tile.targets
+                                        // progress / last result
                                         Text {
-                                            required property var modelData
-                                            width: tileCol.width
-                                            text: "⇪ " + modelData.name + ": " + (modelData.count === 0 ? "up to date"
-                                                : modelData.count + " changed" + (modelData.first ? " (first ship)" : "")
-                                                  + "  ·  " + modelData.changed.slice(0, 3).join(", "))
-                                            color: modelData.count ? deck.theme.yellow : deck.theme.muted
+                                            visible: false     // progress and results are in the log
+                                            width: parent.width
+                                            text: tile.busy ? "⟳ " + deck.busyLabel + ": " + deck.busyLine
+                                                : tile.result ? (tile.result.ok ? "✓ " : "✗ ") + tile.result.label + ": " + tile.result.line : ""
+                                            color: tile.busy ? deck.theme.violet : tile.result && tile.result.ok ? deck.theme.green : deck.theme.red
                                             font.pixelSize: 11
+                                            font.family: "monospace"
                                             elide: Text.ElideRight
                                         }
                                     }
 
-                                    // newest commit when nothing is drafted
-                                    Text {
-                                        visible: !r.draft && r.commits.length > 0
-                                        width: parent.width
-                                        text: r.commits.length ? r.commits[0].hash + "  " + r.commits[0].subject + "  · " + r.commits[0].ago : ""
-                                        color: deck.theme.dim
-                                        font.pixelSize: 11
-                                        elide: Text.ElideRight
-                                    }
+                                    // ---- filler: spare room shows unstaged files, then recent commits ----
+                                    Column {
+                                        id: filler
+                                        anchors { top: tileCol.bottom; topMargin: 8; left: parent.left; right: parent.right; margins: 12 }
+                                        readonly property real room: tile.height - tileCol.implicitHeight - 32
+                                        readonly property int lines: Math.max(0, Math.floor(room / 16))
+                                        readonly property var dirtyShown: (r.dirty_files || []).slice(0, Math.min(6, Math.max(0, lines - 2)))
+                                        readonly property int commitLines: Math.max(0, lines - (dirtyShown.length ? dirtyShown.length + 1 : 0) - 1)
+                                        spacing: 2
+                                        visible: lines > 1
 
-                                    // actions
-                                    Flow {
-                                        width: parent.width
-                                        spacing: 6
-                                        Chip {
-                                            visible: !!r.draft && r.staged.length > 0
-                                            text: "Commit"; tone: deck.theme.violet; filled: true; action: true
-                                            enabledAction: deck.idle
-                                            onClicked: deck.run(r.path, "Commit", [deck.land, "commit", r.path])
-                                        }
-                                        Chip {
-                                            visible: !!r.draft && r.staged.length === 0
-                                            text: "Discard stale draft"; tone: deck.theme.yellow; action: true
-                                            enabledAction: deck.idle
-                                            onClicked: deck.run(r.path, "Discard", [deck.land, "discard", r.path])
-                                        }
-                                        Chip {
-                                            visible: !!r.input && (r.ahead || 0) > 0
-                                            text: "Push + bump ~/nixos"; tone: deck.theme.violet; action: true
-                                            enabledAction: deck.idle
-                                            onClicked: deck.run(r.path, "Bump", [deck.land, "bump", r.path])
-                                        }
-                                        Chip {
-                                            visible: !r.input && (r.ahead || 0) > 0
-                                            text: "Push ↑" + r.ahead; tone: deck.theme.violet; action: true
-                                            enabledAction: deck.idle
-                                            onClicked: deck.run(r.path, "Push", [deck.land, "push", r.path])
+                                        Text {
+                                            visible: filler.dirtyShown.length > 0
+                                            text: "UNSTAGED"
+                                            color: deck.theme.muted
+                                            font.pixelSize: 10; font.bold: true; font.letterSpacing: 1.2
                                         }
                                         Repeater {
-                                            model: tile.targets.filter(t => t.count > 0)
-                                            Chip {
-                                                required property var modelData
-                                                text: "Ship " + modelData.name; tone: deck.theme.violet; filled: true; action: true
-                                                enabledAction: deck.idle
-                                                onClicked: deck.run(r.path, "Ship " + modelData.name, [deck.ship, "target", r.path, modelData.name])
-                                            }
-                                        }
-                                    }
-
-                                    // progress / last result
-                                    Text {
-                                        visible: false     // progress and results are in the log
-                                        width: parent.width
-                                        text: tile.busy ? "⟳ " + deck.busyLabel + ": " + deck.busyLine
-                                            : tile.result ? (tile.result.ok ? "✓ " : "✗ ") + tile.result.label + ": " + tile.result.line : ""
-                                        color: tile.busy ? deck.theme.violet : tile.result && tile.result.ok ? deck.theme.green : deck.theme.red
-                                        font.pixelSize: 11
-                                        font.family: "monospace"
-                                        elide: Text.ElideRight
-                                    }
-                                }
-
-                                // ---- filler: spare room shows unstaged files, then recent commits ----
-                                Column {
-                                    id: filler
-                                    anchors { top: tileCol.bottom; topMargin: 8; left: parent.left; right: parent.right; margins: 12 }
-                                    readonly property real room: tile.height - tileCol.implicitHeight - 32
-                                    readonly property int lines: Math.max(0, Math.floor(room / 16))
-                                    readonly property var dirtyShown: (r.dirty_files || []).slice(0, Math.min(6, Math.max(0, lines - 2)))
-                                    readonly property int commitLines: Math.max(0, lines - (dirtyShown.length ? dirtyShown.length + 1 : 0) - 1)
-                                    spacing: 2
-                                    visible: lines > 1
-
-                                    Text {
-                                        visible: filler.dirtyShown.length > 0
-                                        text: "UNSTAGED"
-                                        color: deck.theme.muted
-                                        font.pixelSize: 10; font.bold: true; font.letterSpacing: 1.2
-                                    }
-                                    Repeater {
-                                        model: filler.dirtyShown
-                                        Text {
-                                            required property var modelData
-                                            width: filler.width
-                                            text: "· " + modelData
-                                            color: deck.theme.dim
-                                            font.family: "monospace"
-                                            font.pixelSize: 11
-                                            elide: Text.ElideMiddle
-                                        }
-                                    }
-                                    Text {
-                                        visible: filler.commitLines > 0 && r.commits.length > (r.draft ? 0 : 1)
-                                        topPadding: 4
-                                        text: "RECENT"
-                                        color: deck.theme.muted
-                                        font.pixelSize: 10; font.bold: true; font.letterSpacing: 1.2
-                                    }
-                                    Repeater {
-                                        // the newest commit already shows above when there's no draft
-                                        model: r.commits.slice(r.draft ? 0 : 1, (r.draft ? 0 : 1) + filler.commitLines)
-                                        Row {
-                                            required property var modelData
-                                            spacing: 6
-                                            Text { text: modelData.hash; color: deck.theme.yellow; font.family: "monospace"; font.pixelSize: 11 }
+                                            model: filler.dirtyShown
                                             Text {
-                                                width: filler.width - 110
-                                                text: modelData.subject
+                                                required property var modelData
+                                                width: filler.width
+                                                text: "· " + modelData
                                                 color: deck.theme.dim
+                                                font.family: "monospace"
                                                 font.pixelSize: 11
-                                                elide: Text.ElideRight
+                                                elide: Text.ElideMiddle
                                             }
-                                            Text { text: modelData.ago; color: deck.theme.muted; font.pixelSize: 11 }
+                                        }
+                                        Text {
+                                            visible: filler.commitLines > 0 && r.commits.length > (r.draft ? 0 : 1)
+                                            topPadding: 4
+                                            text: "RECENT"
+                                            color: deck.theme.muted
+                                            font.pixelSize: 10; font.bold: true; font.letterSpacing: 1.2
+                                        }
+                                        Repeater {
+                                            // the newest commit already shows above when there's no draft
+                                            model: r.commits.slice(r.draft ? 0 : 1, (r.draft ? 0 : 1) + filler.commitLines)
+                                            Row {
+                                                required property var modelData
+                                                spacing: 6
+                                                Text { text: modelData.hash; color: deck.theme.yellow; font.family: "monospace"; font.pixelSize: 11 }
+                                                Text {
+                                                    width: filler.width - 110
+                                                    text: modelData.subject
+                                                    color: deck.theme.dim
+                                                    font.pixelSize: 11
+                                                    elide: Text.ElideRight
+                                                }
+                                                Text { text: modelData.ago; color: deck.theme.muted; font.pixelSize: 11 }
+                                            }
                                         }
                                     }
                                 }
