@@ -1,19 +1,27 @@
 #!/usr/bin/env python3
-"""otr: a random episode of an old-time radio show, streamed from the Internet Archive.
+"""otr: a random episode of an old-time radio show from the Internet Archive.
 
   otr            a tofi menu of the shows (Solarized light/dark, like Super+R)
   otr SHOW       straight to a show, e.g. `otr xminus`
   otr list       the shows
-  otr keep       save the last episode into ~/Music/radio
+  otr history    what was heard when, newest first
+  otr again [M]  the last episode again, from minute M (default 0): a fast-forward
+  otr next       the episode after the last one, in the show's broadcast order
+  otr queue SHOW [WORD]   queue an episode (title matching WORD, or an unheard one);
+                 `otr queue` lists the queue, `otr queue clear` empties it, `otr queue play` plays its first now
   otr stop       stop it
 
-The episode's name goes to a mako card as well as the terminal, so the menu works
-from a key binding too. ~/justfile wraps it: `just otr`, `just keep`, `just stop`.
+The pick is one not heard yet (any, once a show is all heard). It streams while a
+copy downloads to ~/Music/radio/SHOW/, and plays from that copy next time. Every
+play is a line in ~/Music/radio/listened.tsv (when, show, episode). The episode's
+name goes to a mako card as well as the terminal, so the menu works from a key
+binding too. ~/justfile wraps it: `just otr`, `just history`, `just stop`.
 """
-import json, os, random, subprocess, sys, urllib.parse, urllib.request
+import datetime, json, os, random, subprocess, sys, urllib.parse, urllib.request
 
 RADIO = os.path.expanduser("~/Music/radio")
-LAST = os.path.join(RADIO, ".last")
+LOG = os.path.join(RADIO, "listened.tsv")
+QUEUE = os.path.join(RADIO, "queue.tsv")     # show<TAB>episode; played in order as each one ends
 
 SHOWS = {   # short name: (archive.org item, what it is)
     "mercury":  ("OrsonWelles_MercuryTheatre", "Mercury Theatre on the Air · Orson Welles, 1938"),
@@ -47,37 +55,122 @@ def menu():
     return next((k for k, (_, what) in SHOWS.items() if what == out), None)
 
 
-def play(name):
+def heard():
+    """[(when, show, episode)] from the log, oldest first."""
+    if not os.path.exists(LOG):
+        return []
+    return [tuple(l.rstrip("\n").split("\t")[:3]) for l in open(LOG) if l.count("\t") >= 2]
+
+
+def episodes(name):
+    """The show's episodes in broadcast order (the file names lead with the date or number)."""
+    meta = json.load(urllib.request.urlopen(f"https://archive.org/metadata/{SHOWS[name][0]}"))
+    return sorted(f["name"] for f in meta["files"] if f["name"].lower().endswith(".mp3"))
+
+
+def unheard(name, eps):
+    done = {e for _, s, e in heard() if s == name}
+    return random.choice([e for e in eps if e not in done] or eps)
+
+
+def squash(t):
+    return "".join(c for c in t.lower() if c.isalnum())
+
+
+def queued():
+    if not os.path.exists(QUEUE):
+        return []
+    return [tuple(l.rstrip("\n").split("\t")[:2]) for l in open(QUEUE) if "\t" in l]
+
+
+def play(name, ep=None, start=0):
     item, what = SHOWS[name]
-    meta = json.load(urllib.request.urlopen(f"https://archive.org/metadata/{item}"))
-    ep = random.choice([f["name"] for f in meta["files"] if f["name"].lower().endswith(".mp3")])
+    if ep is None:
+        ep = unheard(name, episodes(name))
     url = f"https://archive.org/download/{item}/{urllib.parse.quote(ep)}"
-    os.makedirs(RADIO, exist_ok=True)
-    with open(LAST, "w") as f:
-        f.write(url + "\n")
+
+    folder = os.path.join(RADIO, name)
+    os.makedirs(folder, exist_ok=True)
+    saved = os.path.join(folder, ep)
+    if os.path.exists(saved):
+        source = saved
+    elif os.path.exists(saved + ".part"):
+        source = url     # still downloading
+    else:
+        # download alongside the stream, in its own session so it finishes even
+        # if playback is stopped; .part until it's whole
+        source = url
+        subprocess.Popen(["sh", "-c", 'curl -sSLf -o "$1.part" "$2" && mv "$1.part" "$1"', "sh", saved, url],
+                         start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    with open(LOG, "a") as f:
+        f.write(f"{datetime.datetime.now():%Y-%m-%d %H:%M}\t{name}\t{ep}\n")
+
     subprocess.run(["pkill", "-x", "ffplay"], check=False)   # one show at a time
-    say(what.split(" · ")[0], os.path.splitext(ep)[0])
+    say(what.split(" · ")[0], os.path.splitext(ep)[0] + ("  (saved copy)" if source == saved else "")
+        + (f"  from {start} min" if start else ""))
     # -f mp3: some of these files' ID3 tags make ffplay's probe take them for WAV and give up
-    done = subprocess.run(["ffplay", "-nodisp", "-autoexit", "-loglevel", "error", "-f", "mp3", url],
+    done = subprocess.run(["ffplay", "-nodisp", "-autoexit", "-loglevel", "error", "-f", "mp3", "-ss", str(start * 60), source],
                           stderr=subprocess.PIPE, text=True)
-    if done.returncode not in (0, -15):   # -15: stopped by pkill (just stop, or the next pick)
+    if done.returncode == 0:              # it ran to the end: the queue's next, if any
+        q = queued()
+        if q:
+            with open(QUEUE, "w") as f:
+                f.writelines(f"{s}\t{e}\n" for s, e in q[1:])
+            play(*q[0])
+    elif done.returncode not in (123, -15):   # 123: ffplay's exit on SIGTERM (just stop, the next pick)
         lines = (done.stderr or "").strip().splitlines()
         say("otr: couldn't play it", lines[-1] if lines else f"ffplay exit {done.returncode}")
 
 
-def keep():
-    url = open(LAST).read().strip()
-    name = urllib.parse.unquote(url.rsplit("/", 1)[1])
-    subprocess.run(["curl", "-sSLf", "-o", os.path.join(RADIO, name), url], check=True)
-    say("saved to ~/Music/radio", name)
+def history():
+    for when, show, ep in reversed(heard()):
+        print(f"  {when}  {show:9} {os.path.splitext(ep)[0]}")
 
 
 arg = sys.argv[1] if len(sys.argv) > 1 else ""
 if arg == "list":
     for k, (_, what) in SHOWS.items():
         print(f"  otr {k:9} {what}")
-elif arg == "keep":
-    keep()
+elif arg == "history":
+    history()
+elif arg == "again":
+    last = heard()
+    if not last:
+        sys.exit("nothing heard yet")
+    _, show, ep = last[-1]
+    play(show, ep, int(sys.argv[2]) if len(sys.argv) > 2 else 0)
+elif arg == "next":
+    last = heard()
+    if not last:
+        sys.exit("nothing heard yet")
+    _, show, ep = last[-1]
+    eps = episodes(show)
+    i = eps.index(ep) + 1 if ep in eps else 0
+    play(show, eps[i % len(eps)])
+elif arg == "queue":
+    if len(sys.argv) > 2 and sys.argv[2] == "clear":
+        open(QUEUE, "w").close()
+    elif len(sys.argv) > 2 and sys.argv[2] == "play":    # the queue's first, now
+        q = queued()
+        if not q:
+            sys.exit("the queue is empty")
+        with open(QUEUE, "w") as f:
+            f.writelines(f"{s}\t{e}\n" for s, e in q[1:])
+        play(*q[0])
+    elif len(sys.argv) > 2:
+        show = sys.argv[2]
+        if show not in SHOWS:
+            sys.exit(f"no show '{show}'; `otr list` shows them")
+        eps = episodes(show)
+        word = squash(" ".join(sys.argv[3:]))
+        hits = [e for e in eps if word in squash(e)] if word else [unheard(show, eps)]
+        if not hits:
+            sys.exit(f"no {show} episode matches '{' '.join(sys.argv[3:])}'")
+        os.makedirs(RADIO, exist_ok=True)
+        with open(QUEUE, "a") as f:
+            f.write(f"{show}\t{hits[0]}\n")
+    for i, (show, ep) in enumerate(queued(), 1):
+        print(f"  {i}. {show:9} {os.path.splitext(ep)[0]}")
 elif arg == "stop":
     subprocess.run(["pkill", "-x", "ffplay"], check=False)
 elif arg in SHOWS:

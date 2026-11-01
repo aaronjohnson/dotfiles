@@ -19,7 +19,7 @@ tofi, mako, GTK apps and Emacs follow.
 | `fcitx5/` | Japanese input (Anthy): 半角/全角 toggles, 変換/無変換 on/off |
 | `bin/` | Scripts: `hud` (the bar's stats as a terminal UI with polar dials), `usbc-power` (USB-C charger report), `land` (Super+F12: commit drafted messages, push and bump ~/nixos, switch through polkit), `auto-brightness` (screen follows the light sensor; Hyprland starts it, Super+F8 toggles) |
 | `bash/` | `bashrc`: `~/dotfiles/bin` on PATH; on the text console, the desktop clipboard via `wl-paste` (Ctrl+V at the prompt) |
-| `just/` | `~/justfile`: `just otr` (`bin/otr`) a tofi menu of old-time radio shows, then a random episode streamed from the Internet Archive (`just keep` saves it); `just wotw` the saved 1938 War of the Worlds; `just stop` |
+| `just/` | `~/justfile`: `just otr` (`bin/otr`) a tofi menu of old-time radio shows, then an unheard episode streamed from the Internet Archive and saved to `~/Music/radio` as it plays (`just history`: what you heard when; `just again 20`: the last one from minute 20; `just next`, `just queue SHOW WORD`); `just wotw` the saved 1938 War of the Worlds; `just stop` |
 | `emacs/` | `init.el`: Wayland clipboard from the terminal, Solarized that follows the switch, nix-mode |
 
 ## Install

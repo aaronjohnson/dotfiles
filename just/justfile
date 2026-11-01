@@ -9,17 +9,29 @@ default:
 wotw:
     ffplay -nodisp -autoexit -loglevel error "{{radio}}/1938-10-30 Mercury Theatre - The War of the Worlds.mp3"
 
-# play anything in ~/Music/radio whose name matches, e.g. `just radio worlds`
+# play anything saved under ~/Music/radio whose name matches, e.g. `just radio worlds`
 radio match:
-    ffplay -nodisp -autoexit -loglevel error "$(ls -d "{{radio}}"/*{{match}}*.mp3 | head -1)"
+    ffplay -nodisp -autoexit -loglevel error -f mp3 "$(find "{{radio}}" -iname '*{{match}}*.mp3' | sort | head -1)"
 
-# old-time radio: a menu of shows, then a random episode (bin/otr); `just otr xminus` skips the menu
+# old-time radio: a menu of shows, then an unheard episode, saved as it plays (bin/otr); `just otr xminus` skips the menu
 otr show="":
     ~/dotfiles/bin/otr {{show}}
 
-# save the last `just otr` episode into ~/Music/radio
-keep:
-    ~/dotfiles/bin/otr keep
+# the last old-time radio episode again from minute N, e.g. `just again 20` (a fast-forward)
+again minute="0":
+    ~/dotfiles/bin/otr again {{minute}}
+
+# the episode after the last one, in broadcast order
+next:
+    ~/dotfiles/bin/otr next
+
+# queue an episode to play when this one ends, e.g. `just queue xminus grimshaw`; `just queue` lists
+queue *args:
+    ~/dotfiles/bin/otr queue {{args}}
+
+# what old-time radio you heard when, newest first (~/Music/radio/listened.tsv)
+history:
+    ~/dotfiles/bin/otr history
 
 # stop whatever's playing
 stop:
