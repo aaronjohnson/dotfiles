@@ -466,6 +466,30 @@ hl.bind("XF86AudioPause", hl.dsp.exec_cmd("~/dotfiles/bin/media play-pause"), { 
 hl.bind("XF86AudioPlay",  hl.dsp.exec_cmd("~/dotfiles/bin/media play-pause"), { locked = true, description = "Media: Play / pause" })
 hl.bind("XF86AudioPrev",  hl.dsp.exec_cmd("~/dotfiles/bin/media previous"),   { locked = true, repeating = true, description = "Media: Next / previous track (radio: 30 s on / back)" })
 
+-- The Framework's top row types F1-F12 without Fn (so the Super+F binds need no Fn), which
+-- leaves its media symbols behind Fn. While an old-time radio show is on (bin/otr, in mpv:
+-- playing or paused), F1-F6 are those media keys with no modifier; otherwise the key goes
+-- on to the window as itself (F5 still reloads, F2 still renames).
+local function radioOn()
+    local p = io.popen("playerctl -p mpv status 2>/dev/null")
+    local state = p and p:read("*l")
+    if p then p:close() end
+    return state == "Playing" or state == "Paused"
+end
+for _, k in ipairs({
+    { key = "F1", cmd = "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle",        what = "mute" },
+    { key = "F2", cmd = "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-",         what = "volume down" },
+    { key = "F3", cmd = "wpctl set-volume -l 1 @DEFAULT_AUDIO_SINK@ 5%+",    what = "volume up" },
+    { key = "F4", cmd = "~/dotfiles/bin/media previous",                      what = "30 s back" },
+    { key = "F5", cmd = "~/dotfiles/bin/media play-pause",                    what = "play / pause" },
+    { key = "F6", cmd = "~/dotfiles/bin/media next",                          what = "30 s on" },
+}) do
+    hl.bind(k.key, function()
+        if radioOn() then hl.dispatch(hl.dsp.exec_cmd(k.cmd))
+        else hl.dispatch(hl.dsp.send_shortcut({ mods = "", key = k.key })) end
+    end, { repeating = k.key ~= "F1" and k.key ~= "F5", description = "Media: " .. k.key .. " while radio is on: " .. k.what })
+end
+
 -- Power button: tap to lock, hold for the power menu (logind ignores the key, see
 -- ~/nixos/power.nix). Not locked: on the lock screen the button does nothing.
 hl.bind("XF86PowerOff", hl.dsp.exec_cmd("~/dotfiles/bin/power-button down"), { description = "Ours: Power: tap locks, hold opens the power menu" })

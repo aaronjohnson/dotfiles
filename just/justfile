@@ -7,11 +7,11 @@ default:
 
 # The War of the Worlds, Mercury Theatre, 30 Oct 1938 (no ads; it was unsponsored)
 wotw:
-    mpv --no-video --really-quiet "{{radio}}/1938-10-30 Mercury Theatre - The War of the Worlds.mp3"
+    mpv --no-video --really-quiet --demuxer-lavf-format=mp3 "{{radio}}/1938-10-30 Mercury Theatre - The War of the Worlds.mp3"
 
 # play anything saved under ~/Music/radio whose name matches, e.g. `just radio worlds`
 radio match:
-    mpv --no-video --really-quiet "$(find "{{radio}}" -iname '*{{match}}*.mp3' | sort | head -1)"
+    mpv --no-video --really-quiet --demuxer-lavf-format=mp3 "$(find "{{radio}}" -iname '*{{match}}*.mp3' | sort | head -1)"
 
 # old-time radio: a menu of shows, then an unheard episode, saved as it plays (bin/otr); `just otr xminus` skips the menu
 otr show="":
