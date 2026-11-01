@@ -4,9 +4,16 @@
 Run by the global hooks in ~/dotfiles/git/hooks (git config --global core.hooksPath):
     public-guard pre-commit          scan the staged lines that are being added, and file names
     public-guard commit-msg FILE     scan the commit message (land's drafts included)
+Also run by ship and by Claude Code (a PreToolUse hook in ~/.claude/settings.json):
+    public-guard paths REPO PATH...  scan files about to be deployed (ship: a site is public)
+    public-guard text                scan stdin
+    public-guard claude-hook         a Claude Code hook: stdin is the tool call; refuses
+                                     commits and pushes to public repos, gh descriptions and
+                                     release notes, and Artifact pages that carry a term
 
 Only repos whose GitHub remote is public are checked: `gh` is asked once a day per repo
-and the answer cached in .git/public-guard. No GitHub remote: not checked.
+and the answer cached in .git/public-guard. No GitHub remote: checked only if the repo
+has a .ship file (it deploys somewhere public, like karkhana's bench site).
 PUBLIC_GUARD=force checks any repo; PUBLIC_GUARD=off skips; `git commit --no-verify`
 skips the hooks for one commit.
 
@@ -53,7 +60,8 @@ def is_public():
         return True
     slug = github_slug()
     if not slug:
-        return False
+        top = git("rev-parse", "--show-toplevel").strip()
+        return bool(top) and (Path(top) / ".ship").exists()
     cache = Path(git("rev-parse", "--git-common-dir").strip()) / "public-guard"
     try:
         ts, state, cached_slug = cache.read_text().split()
@@ -90,10 +98,14 @@ def patterns():
     return out
 
 
+DATA_URI = re.compile(r"data:[\w/+.-]+;base64,[A-Za-z0-9+/=]+")
+
+
 def scan(lines, pats):
     """lines: [(where, text)] -> [(where, what, text)]"""
     hits = []
     for where, text in lines:
+        text = DATA_URI.sub("", text)        # embedded images are not words
         for name, rx in pats:
             if rx.search(text):
                 hits.append((where, name, text))
@@ -124,12 +136,108 @@ def message_lines(file):
             if not l.startswith("#")]
 
 
+def file_lines(repo, paths):
+    """Every text line of every file under paths (relative to repo), as ship deploys them."""
+    out = []
+    for p in paths:
+        root = Path(repo) / p
+        files = [root] if root.is_file() else sorted(f for f in root.rglob("*") if f.is_file())
+        for f in files:
+            if any(part.startswith(".") for part in f.relative_to(repo).parts):
+                continue
+            try:
+                data = f.read_bytes()
+            except OSError:
+                continue
+            if b"\0" in data[:8192]:
+                continue                     # binary
+            rel = f.relative_to(repo)
+            out.append((f"{rel} (file name)", str(rel)))
+            for i, l in enumerate(data.decode(errors="replace").splitlines(), 1):
+                out.append((f"{rel}:{i}", l))
+    return out
+
+
+def report(hits, what):
+    print(f"public-guard: {len(hits)} private mention(s) in {what}:", file=sys.stderr)
+    for where, name, text in hits[:20]:
+        print(f"  {where}: {name}   | {text.strip()[:100]}", file=sys.stderr)
+
+
+def in_repo(cwd):
+    """Run git (and is_public) as if from cwd."""
+    try:
+        os.chdir(cwd)
+        return True
+    except OSError:
+        return False
+
+
+def claude_hook():
+    """Claude Code PreToolUse: deny a publishing tool call that carries a private term."""
+    try:
+        call = json.load(sys.stdin)
+    except json.JSONDecodeError:
+        return
+    tool, inp = call.get("tool_name", ""), call.get("tool_input", {}) or {}
+    cwd = call.get("cwd") or os.getcwd()
+    pats, lines, what = patterns(), [], ""
+    if tool == "Bash":
+        cmd = inp.get("command", "")
+        # a cd or -C at the front picks the repo
+        m = re.search(r"(?:^|&&|;)\s*cd\s+([^\s;&|]+)", cmd) or re.search(r"git\s+-C\s+([^\s;&|]+)", cmd)
+        if m:
+            cwd = os.path.expanduser(m.group(1).strip("'\""))
+        if re.search(r"\bgh\s+(repo\s+(edit|create)|release\s+(create|edit)|gist\s+create|pr\s+(create|edit|comment)|issue\s+(create|edit|comment))\b", cmd):
+            lines, what = [("the gh command", l) for l in cmd.splitlines()], "a GitHub publish"
+        elif re.search(r"\bgit\b[^|;&]*\bpush\b", cmd) and in_repo(cwd) and is_public():
+            log = git("log", "-p", "--no-color", "HEAD", "--not", "--remotes")
+            lines = [("an unpushed commit", l[1:] if l.startswith("+") else l) for l in log.splitlines()
+                     if not l.startswith("-")]
+            what = "a push to a PUBLIC repo"
+        elif re.search(r"\bgit\b[^|;&]*\bcommit\b", cmd) and in_repo(cwd) and is_public():
+            lines = staged_lines() + [("the git commit command", l) for l in cmd.splitlines()]
+            what = "a commit to a PUBLIC repo"
+    elif tool == "Artifact" and inp.get("file_path"):
+        f = Path(inp["file_path"])
+        if f.is_file():
+            lines = [(f"{f.name}:{i}", l) for i, l in enumerate(f.read_text(errors="replace").splitlines(), 1)]
+            what = "an Artifact page"
+    hits = scan(lines, pats) if lines else []
+    if not hits:
+        return
+    found = ", ".join(sorted({w for _, w, _ in hits}))
+    where = "; ".join(sorted({w for w, _, _ in hits})[:6])
+    print(json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse", "permissionDecision": "deny",
+        "permissionDecisionReason": f"public-guard: {what} mentions private terms ({found}) at {where}. "
+                                    "Reword or remove them first; the term list is ~/.config/git/private-terms.txt."}}))
+
+
 def main():
-    if len(sys.argv) < 2 or sys.argv[1] not in ("pre-commit", "commit-msg"):
+    modes = ("pre-commit", "commit-msg", "paths", "text", "claude-hook")
+    if len(sys.argv) < 2 or sys.argv[1] not in modes:
         sys.exit(__doc__)
+    mode = sys.argv[1]
+    if mode == "claude-hook":
+        return claude_hook()
+    if mode == "text":
+        hits = scan([(f"line {i}", l) for i, l in enumerate(sys.stdin.read().splitlines(), 1)], patterns())
+        if hits:
+            report(hits, "the text")
+            sys.exit(1)
+        return
+    if mode == "paths":
+        repo = sys.argv[2]
+        hits = scan(file_lines(repo, sys.argv[3:]), patterns())
+        if hits:
+            report(hits, "files about to be deployed")
+            print(f"Blocked: {', '.join(sorted({w for _, w, _ in hits}))[:120]}", file=sys.stderr)
+            sys.exit(1)
+        return
     if not is_public():
         return
-    lines = staged_lines() if sys.argv[1] == "pre-commit" else message_lines(sys.argv[2])
+    lines = staged_lines() if mode == "pre-commit" else message_lines(sys.argv[2])
     hits = scan(lines, patterns())
     if not hits:
         return

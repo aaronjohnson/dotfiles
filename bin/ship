@@ -49,6 +49,11 @@ ship_target() {
   n=$(printf '%s\n' "$changes" | wc -l)
   [[ -f "$saved" ]] || n=$(printf '%s\n' "$now" | grep -c .)   # first ship: count every file
   printf '%s\n' "$changes" | head -25; (( n > 25 )) && echo "  ... and $((n - 25)) more"
+  # a deploy is public even from a private repo: nothing on the private-terms list goes out
+  if ! "$HOME/dotfiles/git/public-guard" paths "$repo" $paths; then
+    notify "Ship held: $name ✗" "$rname: private terms in what would deploy" 0
+    return 1
+  fi
   ask "Ship $name from $rname?" || return 1
   local logdir="$repo/ops/logs"; [[ -d "$logdir" ]] || logdir="${XDG_STATE_HOME:-$HOME/.local/state}/ship"
   mkdir -p "$logdir" "$repo/.git/ship"
