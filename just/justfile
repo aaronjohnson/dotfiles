@@ -1,0 +1,26 @@
+# ~/justfile (a link to ~/dotfiles/just/justfile): small things to run from home. `just` lists them.
+
+radio := env_var('HOME') / "Music/radio"
+
+default:
+    @just --list
+
+# The War of the Worlds, Mercury Theatre, 30 Oct 1938 (no ads; it was unsponsored)
+wotw:
+    ffplay -nodisp -autoexit -loglevel error "{{radio}}/1938-10-30 Mercury Theatre - The War of the Worlds.mp3"
+
+# play anything in ~/Music/radio whose name matches, e.g. `just radio worlds`
+radio match:
+    ffplay -nodisp -autoexit -loglevel error "$(ls -d "{{radio}}"/*{{match}}*.mp3 | head -1)"
+
+# old-time radio: a menu of shows, then a random episode (bin/otr); `just otr xminus` skips the menu
+otr show="":
+    ~/dotfiles/bin/otr {{show}}
+
+# save the last `just otr` episode into ~/Music/radio
+keep:
+    ~/dotfiles/bin/otr keep
+
+# stop whatever's playing
+stop:
+    -pkill ffplay

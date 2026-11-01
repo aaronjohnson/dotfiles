@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""otr: a random episode of an old-time radio show, streamed from the Internet Archive.
+
+  otr            a tofi menu of the shows (Solarized light/dark, like Super+R)
+  otr SHOW       straight to a show, e.g. `otr xminus`
+  otr list       the shows
+  otr keep       save the last episode into ~/Music/radio
+  otr stop       stop it
+
+The episode's name goes to a mako card as well as the terminal, so the menu works
+from a key binding too. ~/justfile wraps it: `just otr`, `just keep`, `just stop`.
+"""
+import json, os, random, subprocess, sys, urllib.parse, urllib.request
+
+RADIO = os.path.expanduser("~/Music/radio")
+LAST = os.path.join(RADIO, ".last")
+
+SHOWS = {   # short name: (archive.org item, what it is)
+    "mercury":  ("OrsonWelles_MercuryTheatre", "Mercury Theatre on the Air · Orson Welles, 1938"),
+    "xminus":   ("OTRR_X_Minus_One_Singles", "X Minus One · science fiction, 1955-58"),
+    "dimx":     ("OTRR_Dimension_X_Singles", "Dimension X · science fiction, 1950-51"),
+    "suspense": ("OTRR_Suspense_Singles", "Suspense · thrillers, 1940-62"),
+    "mystery":  ("cbsrmt-74-02-08-33-conspiracy-to-defraud", "CBS Radio Mystery Theater · 1974-82"),
+    "whistler": ("OTRR_Whistler_Singles", "The Whistler · crime with a twist, 1942-55"),
+    "dollar":   ("OTRR_YoursTrulyJohnnyDollar_Singles", "Yours Truly, Johnny Dollar · insurance investigator"),
+    "marlowe":  ("OTRR_Philip_Marlowe_Singles", "The Adventures of Philip Marlowe · private eye"),
+    "dragnet":  ("OTRR_Dragnet_Singles", "Dragnet · LAPD procedural, 1949-57"),
+    "gunsmoke": ("OTRR_Gunsmoke_Singles", "Gunsmoke · western, 1952-61"),
+    "rangers":  ("TalesOfTheTexasRangers", "Tales of the Texas Rangers · 1950-52"),
+}
+
+
+def say(title, body=""):
+    print(title + ("\n  " + body if body else ""))
+    subprocess.run(["notify-send", "-a", "otr", "-t", "10000", title, body], check=False)
+
+
+def menu():
+    scheme = subprocess.run(["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"],
+                            capture_output=True, text=True).stdout
+    colours = "light" if "light" in scheme else "dark"
+    lines = [what for _, what in SHOWS.values()]
+    out = subprocess.run(["tofi", "--include", os.path.expanduser(f"~/.config/tofi/solarized-{colours}.conf"),
+                          "--prompt-text", "radio: ", "--placeholder-text", "pick a show", "--num-results", str(len(lines)),
+                          "--width", "780", "--height", "400"],
+                         input="\n".join(lines), capture_output=True, text=True).stdout.strip()
+    return next((k for k, (_, what) in SHOWS.items() if what == out), None)
+
+
+def play(name):
+    item, what = SHOWS[name]
+    meta = json.load(urllib.request.urlopen(f"https://archive.org/metadata/{item}"))
+    ep = random.choice([f["name"] for f in meta["files"] if f["name"].lower().endswith(".mp3")])
+    url = f"https://archive.org/download/{item}/{urllib.parse.quote(ep)}"
+    os.makedirs(RADIO, exist_ok=True)
+    with open(LAST, "w") as f:
+        f.write(url + "\n")
+    subprocess.run(["pkill", "-x", "ffplay"], check=False)   # one show at a time
+    say(what.split(" · ")[0], os.path.splitext(ep)[0])
+    subprocess.run(["ffplay", "-nodisp", "-autoexit", "-loglevel", "error", url])
+
+
+def keep():
+    url = open(LAST).read().strip()
+    name = urllib.parse.unquote(url.rsplit("/", 1)[1])
+    subprocess.run(["curl", "-sSLf", "-o", os.path.join(RADIO, name), url], check=True)
+    say("saved to ~/Music/radio", name)
+
+
+arg = sys.argv[1] if len(sys.argv) > 1 else ""
+if arg == "list":
+    for k, (_, what) in SHOWS.items():
+        print(f"  otr {k:9} {what}")
+elif arg == "keep":
+    keep()
+elif arg == "stop":
+    subprocess.run(["pkill", "-x", "ffplay"], check=False)
+elif arg in SHOWS:
+    play(arg)
+elif arg == "":
+    name = menu()
+    if name:
+        play(name)
+else:
+    print(f"no show '{arg}'; `otr list` shows them", file=sys.stderr)
+    sys.exit(1)

@@ -19,6 +19,7 @@ tofi, mako, GTK apps and Emacs follow.
 | `fcitx5/` | Japanese input (Anthy): 半角/全角 toggles, 変換/無変換 on/off |
 | `bin/` | Scripts: `hud` (the bar's stats as a terminal UI with polar dials), `usbc-power` (USB-C charger report), `land` (Super+F12: commit drafted messages, push and bump ~/nixos, switch through polkit), `auto-brightness` (screen follows the light sensor; Hyprland starts it, Super+F8 toggles) |
 | `bash/` | `bashrc`: `~/dotfiles/bin` on PATH; on the text console, the desktop clipboard via `wl-paste` (Ctrl+V at the prompt) |
+| `just/` | `~/justfile`: `just otr` (`bin/otr`) a tofi menu of old-time radio shows, then a random episode streamed from the Internet Archive (`just keep` saves it); `just wotw` the saved 1938 War of the Worlds; `just stop` |
 | `emacs/` | `init.el`: Wayland clipboard from the terminal, Solarized that follows the switch, nix-mode |
 
 ## Install
@@ -29,6 +30,7 @@ repo in `~/dotfiles` and symlink:
 ```sh
 for d in hypr quickshell kitty tofi yazi mako fcitx5; do ln -s ~/dotfiles/$d ~/.config/$d; done
 ln -s ~/dotfiles/emacs/init.el ~/.emacs.d/init.el
+ln -s ~/dotfiles/just/justfile ~/justfile
 ```
 
 Some settings are specific to this machine: the home city's coordinates in
