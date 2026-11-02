@@ -1464,6 +1464,9 @@ ShellRoot {
     // Super+Tab / Super+Shift+Tab / Super+`: Mac-style app and window switcher (Switcher.qml).
     Switcher { theme: root.c }
 
+    // On each workspace change: a brief card of the open workspaces (WorkspacePopup.qml).
+    WorkspacePopup { theme: root.c }
+
     // Super+O: open a link: pinned, most visited, recent pages (OpenPopup.qml, bin/open-url).
     OpenPopup { theme: root.c }
 

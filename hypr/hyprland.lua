@@ -318,10 +318,17 @@ hl.config({
     },
 })
 
+-- Three fingers left/right: the next or previous open workspace, wrapping round at the ends
+-- on this monitor (m+1/m-1 wrap; the built-in "workspace" action stops at the end or makes a new one).
 hl.gesture({
     fingers = 3,
-    direction = "horizontal",
-    action = "workspace"
+    direction = "left",
+    action = function() hl.dispatch(hl.dsp.focus({ workspace = "m+1" })) end
+})
+hl.gesture({
+    fingers = 3,
+    direction = "right",
+    action = function() hl.dispatch(hl.dsp.focus({ workspace = "m-1" })) end
 })
 
 -- Example per-device config

@@ -5,6 +5,18 @@ a new jar on the shelf when something arrives, a recipe refined when something
 that was already there tastes better, a blend adjusted when the balance shifts.
 *Rasa* is Sanskrit for flavour, or essence; this is where it is written down.
 
+## Knowing where you are · 1 November 2026 · a clock on the wall
+
+- **The deck tells the time.** A tab on its top edge shows the local time, the date
+  and the next calendar event, with how long until it. `next-event` reads Google
+  Calendar's private iCal address from a private file, at most every 15 minutes and
+  only when the deck opens, and leaves out all-day, cancelled and declined events.
+- **A card on each workspace change.** A brief centred card has a tile per open
+  workspace on that monitor: its number, a square per window, the first window's
+  title. It takes no keyboard focus and no clicks.
+- **Three-finger swipes wrap round.** Past the last workspace on a monitor comes the
+  first, and the other way too. A swipe no longer makes a new workspace.
+
 ## The deck · 25 October 2026 · the whole kitchen on one counter
 
 Committing, pushing and deploying across several repos used to be a terminal

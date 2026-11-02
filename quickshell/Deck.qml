@@ -92,7 +92,48 @@ Scope {
     }
     function refresh() { loading = true; statusProc.running = true; }
     function checkSwitch() { switchState = "checking"; switchProc.running = true; }
-    function show() { open = true; skipped = ({}); done = []; auto = false; refresh(); checkSwitch(); }
+    function show() { open = true; skipped = ({}); done = []; auto = false; refresh(); checkSwitch(); readCalendar(false); }
+
+    // ---- the clock tab: local time and the next calendar event ----
+    // bin/next-event writes the cache; the tab shows what's there at once and updates when
+    // a fetch finishes. No feeds set up means no file, and the tab is just the clock.
+    SystemClock { id: clock; enabled: deck.open; precision: SystemClock.Minutes }
+    property var calendar: ({})
+    readonly property var nextEvent: {
+        const t = clock.date.getTime() / 1000;
+        return (calendar.events || []).find(e => e.start > t) || null;
+    }
+    // over 6 hours since a fetch worked: the answer may be out of date, so the tab says so
+    readonly property bool calendarStale: !!calendar.fetched && clock.date.getTime() / 1000 - calendar.fetched > 6 * 3600
+    function readCalendar(force) {
+        if (calendarProc.running) return;
+        calendarProc.command = [home + "/dotfiles/bin/next-event"].concat(force ? ["--force"] : []);
+        calendarProc.running = true;
+    }
+    function eventWhen(e) {
+        const at = new Date(e.start * 1000), now = clock.date;
+        const days = Math.round((new Date(at.getFullYear(), at.getMonth(), at.getDate())
+                                 - new Date(now.getFullYear(), now.getMonth(), now.getDate())) / 86400000);
+        const hm = Qt.formatDateTime(at, "HH:mm");
+        return days === 0 ? hm : days === 1 ? "tomorrow " + hm
+             : Qt.formatDateTime(at, days < 7 ? "ddd HH:mm" : "ddd d MMM HH:mm");
+    }
+    function eventIn(e) {
+        const min = Math.ceil((e.start * 1000 - clock.date.getTime()) / 60000);
+        return min < 60 ? "in " + min + " min"
+             : min < 24 * 60 ? "in " + Math.floor(min / 60) + " h" + (min % 60 ? " " + (min % 60) + " min" : "") : "";
+    }
+    FileView {
+        id: calendarFile
+        printErrors: false
+        path: (Quickshell.env("XDG_CACHE_HOME") || deck.home + "/.cache") + "/deck/events.json"
+        onLoaded: { try { deck.calendar = JSON.parse(text()); } catch (e) { deck.calendar = ({}); } }
+        onLoadFailed: deck.calendar = ({})
+    }
+    Process {
+        id: calendarProc
+        onExited: calendarFile.reload()
+    }
 
     // ---- y/N, like the terminal land: the next step, in land's order ----
     // Commit each drafted repo (~/nixos last), push / push + bump, switch, push ~/nixos,
@@ -410,7 +451,7 @@ Scope {
                         if (deck.needsLogin) deck.logIn(); else deck.all();
                     }
                     else if (event.key === Qt.Key_N || event.key === Qt.Key_Space) deck.no();
-                    else if (event.key === Qt.Key_R) { deck.refresh(); deck.checkSwitch(); }
+                    else if (event.key === Qt.Key_R) { deck.refresh(); deck.checkSwitch(); deck.readCalendar(true); }
                     else return;
                     event.accepted = true;
                 }
@@ -430,6 +471,65 @@ Scope {
                     id: strip
                     anchors { top: parent.top; left: parent.left; right: parent.right; margins: 24; topMargin: 34 }
                     height: 0
+                }
+
+                // ---- the time and what's next, as a tab on the top border, centred ----
+                Rectangle {
+                    id: clockTab
+                    z: 20
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    y: -height / 2
+                    height: 40
+                    width: clockRow.width + 32
+                    radius: 8
+                    color: deck.theme.fg
+                    border.width: 1
+                    border.color: deck.theme.dim
+
+                    Row {
+                        id: clockRow
+                        anchors.centerIn: parent
+                        spacing: 12
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: Qt.formatDateTime(clock.date, "HH:mm")
+                            color: deck.theme.bg
+                            font.family: "monospace"
+                            font.pixelSize: 22; font.bold: true
+                        }
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: Qt.formatDateTime(clock.date, "ddd d MMM")
+                            color: deck.theme.bg
+                            opacity: 0.8
+                            font.pixelSize: 13
+                        }
+                        Rectangle {
+                            visible: !!deck.nextEvent
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 1; height: 20
+                            color: deck.theme.bg
+                            opacity: 0.5
+                        }
+                        Text {
+                            visible: !!deck.nextEvent
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: Math.min(implicitWidth, panel.width * 0.25)
+                            text: deck.nextEvent ? deck.nextEvent.title : ""
+                            color: deck.theme.bg
+                            font.pixelSize: 14; font.bold: true
+                            elide: Text.ElideRight
+                        }
+                        Text {
+                            visible: !!deck.nextEvent
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: deck.nextEvent ? [deck.eventWhen(deck.nextEvent), deck.eventIn(deck.nextEvent)]
+                                .concat(deck.calendarStale ? ["not updated lately"] : []).filter(s => s).join(" · ") : ""
+                            color: deck.theme.bg
+                            opacity: 0.8
+                            font.pixelSize: 13
+                        }
+                    }
                 }
 
                 // ---- NEXT: the y/N question, as a tab on the top border, centred ----
