@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# claude-battery-guard: Claude Code holds back as the battery runs down, so a session
+# left running can't take the laptop to a sudden halt, and some charge stays for other
+# uses. Called by the hooks in ~/.claude/settings.json:
+#   claude-battery-guard prompt   before each prompt you send (UserPromptSubmit)
+#   claude-battery-guard tool     before each tool call (PreToolUse)
+#
+# On battery only. On the charger, on a machine with no battery, or with an unreadable
+# battery it does nothing, so a bad reading can't lock you out of Claude.
+# At 5% UPower hibernates the laptop (~/nixos/power.nix); this stops Claude before that.
+
+WARN=25      # a notification, and Claude is told to wrap up
+REFUSE=15    # prompts refused, unless they start with the override word
+HALT=10      # prompts and tools refused, no override
+OVERRIDE=battok
+
+sys=${BATTERY_GUARD_SYS:-/sys/class/power_supply}
+stamp=${XDG_RUNTIME_DIR:-/tmp}/claude-battery-guard.warned   # the last level notified
+mode=$1
+input=$(cat)
+
+capacity= status=
+for bat in "$sys"/BAT*; do
+  [ -r "$bat/capacity" ] && [ -r "$bat/status" ] || continue
+  read -r capacity < "$bat/capacity"
+  read -r status < "$bat/status"
+  break
+done
+for ac in "$sys"/AC*; do
+  [ -r "$ac/online" ] || continue
+  read -r online < "$ac/online"
+  [ "$online" = 1 ] && status=charger
+done
+
+if [ "$status" != Discharging ] || ! [[ "$capacity" =~ ^[0-9]+$ ]]; then
+  [ -e "$stamp" ] && rm -f "$stamp"
+  exit 0
+fi
+
+# One notification a level, on the way down, for sessions nobody is watching as well as
+# the one in front of you. The stamp goes when it's back on the charger.
+notify_once() {
+  local last=0
+  [ -r "$stamp" ] && read -r last < "$stamp"
+  [ "$1" -gt "$last" ] || return
+  echo "$1" > "$stamp"
+  notify-send -a claude-battery-guard -u "$2" "Battery $capacity%: $3" "$4" >/dev/null 2>&1 &
+}
+
+if [ "$capacity" -le "$HALT" ]; then
+  notify_once 3 critical "Claude has stopped" "Plug in to carry on. Its work can be picked up again."
+  echo "Battery at $capacity% (stops at $HALT%): plug in to carry on. Nothing is lost; this session can continue once the laptop is charging." >&2
+  exit 2
+elif [ "$capacity" -le "$REFUSE" ]; then
+  notify_once 2 critical "new Claude prompts refused" "Plug in, or start a prompt with $OVERRIDE. Tools stop at $HALT%."
+elif [ "$capacity" -le "$WARN" ]; then
+  notify_once 1 normal "Claude is on low battery" "New prompts stop at $REFUSE%, and everything at $HALT%."
+fi
+
+[ "$mode" = tool ] && exit 0
+
+if [ "$capacity" -le "$REFUSE" ]; then
+  if [[ "$input" =~ \"prompt\":[[:space:]]*\"$OVERRIDE ]]; then
+    echo "The battery is at $capacity% and the user chose to continue. Be brief, and don't start long jobs. Tools stop at $HALT%."
+    exit 0
+  fi
+  echo "Battery at $capacity%: prompt not sent, to keep the charge for other uses. Plug in, or resend it starting with $OVERRIDE (tools still stop at $HALT%)." >&2
+  exit 2
+elif [ "$capacity" -le "$WARN" ]; then
+  echo "The battery is at $capacity% and not charging. Wrap up what you're doing, and don't start long jobs. New prompts stop at $REFUSE%, tools at $HALT%."
+fi
+exit 0
