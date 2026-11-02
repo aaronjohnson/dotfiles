@@ -331,15 +331,19 @@ hl.device({
     sensitivity = -0.5,
 })
 
--- Keychron K2 Pro (USB-C): a US keyboard, side switch left in Mac mode for the Mac,
--- ChromeOS and Android. US layout, and its Mac media top row types F1-F12 so the
+-- Keychron K2 Pro (USB-C or Bluetooth): a US keyboard, side switch left in Mac mode for
+-- the Mac, ChromeOS and Android. US layout, and its Mac media top row types F1-F12 so the
 -- Super+F binds work without Fn. Details in keychron-k2-pro.xkb. It shows up as four
--- devices; media keys come from consumer-control, so all four get the same keymap.
+-- devices over USB and three over Bluetooth; media keys come from a separate device,
+-- so all of them get the same keymap.
 for _, dev in ipairs({
     "keychron-keychron-k2-pro",
     "keychron-keychron-k2-pro-keyboard",
     "keychron-keychron-k2-pro-consumer-control",
     "keychron-keychron-k2-pro-system-control",
+    "keychron-k2-pro-keyboard",
+    "keychron-k2-pro-keyboard-1",
+    "keychron-k2-pro-mouse",
 }) do
     hl.device({
         name    = dev,
