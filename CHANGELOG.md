@@ -9,8 +9,8 @@ that was already there tastes better, a blend adjusted when the balance shifts.
 
 - **The deck tells the time.** A tab on its top edge shows the local time, the date
   and the next calendar event, with how long until it. `next-event` reads Google
-  Calendar's private iCal address from a private file, at most every 15 minutes and
-  only when the deck opens, and leaves out all-day, cancelled and declined events.
+  Calendar through its API, read-only, at most every 15 minutes and only when the
+  deck opens, and leaves out all-day, cancelled and declined events.
 - **A card on each workspace change.** A brief centred card has a tile per open
   workspace on that monitor: its number, a square per window, the first window's
   title. It takes no keyboard focus and no clicks.

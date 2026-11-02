@@ -529,6 +529,13 @@ Scope {
                             opacity: 0.8
                             font.pixelSize: 13
                         }
+                        Text {      // Google wants a new sign-in: say how, or the events just go quiet
+                            visible: deck.calendar.error === "login"
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: "calendar: run next-event login"
+                            color: deck.theme.bg
+                            font.pixelSize: 13; font.bold: true
+                        }
                     }
                 }
 

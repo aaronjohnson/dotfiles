@@ -1,43 +1,57 @@
-#!/usr/bin/env nix-shell
-#!nix-shell -i python3 -p "python3.withPackages (ps: [ ps.icalendar ps.recurring-ical-events ])"
+#!/usr/bin/env python3
 """next-event: the coming calendar events, for the deck's clock tab (Deck.qml).
 
-    next-event            fetch the feeds if the last fetch is over 15 min old, write the cache
-    next-event --force    fetch now
-    next-event add        add a feed: prompts for its URL (not echoed), then shows what's next
+    next-event                 ask Google if the last answer is over 15 min old, write the cache
+    next-event --force         ask now
+    next-event login [FILE]    one-time setup: FILE is the OAuth client JSON from Google Cloud
+                               (default: the newest ~/Downloads/client_secret_*.json, moved into
+                               place); opens the browser to sign in, then shows what's next
 
-Feeds are Google Calendar's "Secret address in iCal format" (Settings > your calendar >
-Integrate calendar), one per line in ~/.config/deck/calendars.txt. Those URLs are read
-access to the calendar, so the file is private and mode 600, outside this public repo;
-see deck/calendars.example.txt.
+Reads the primary calendar through the Google Calendar API, read-only, with a Desktop OAuth
+client from your own Cloud project (Internal, so its sign-in doesn't lapse). The client and
+the refresh token live in ~/.config/deck/, mode 600, outside this public repo.
 
 Writes ~/.cache/deck/events.json: { fetched, error, events: [{ start, title }] }, start in
 unix seconds, soonest first, for the next 30 days. Timed events only: an all-day event or
-a holiday would sit in front of the next thing you have to be at. Cancelled events and ones
-you declined are left out. A failed fetch keeps that feed's last copy, so the deck still
-answers offline and `fetched` says how old the answer is.
+a holiday would sit in front of the next thing you have to be at. Cancelled events, ones
+you declined and working-location markers are left out. A failed fetch keeps the last
+answer, so the deck still works offline and `fetched` says how old it is; error is "login"
+when Google wants a new sign-in. Standard library only.
 """
 
+import base64
 import datetime as dt
-import getpass
+import glob
 import hashlib
+import http.server
 import json
 import os
+import secrets
 import signal
+import subprocess
 import sys
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
-import icalendar
-import recurring_ical_events
-
 HOME = Path.home()
-FEEDS = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / "deck/calendars.txt"
-CACHE = Path(os.environ.get("XDG_CACHE_HOME", HOME / ".cache")) / "deck"
-OUT = CACHE / "events.json"
+CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / "deck"
+CLIENT = CONFIG / "google-client.json"
+TOKEN = CONFIG / "google-token.json"
+OUT = Path(os.environ.get("XDG_CACHE_HOME", HOME / ".cache")) / "deck/events.json"
+SCOPE = "https://www.googleapis.com/auth/calendar.events.readonly"
+AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+TOKEN_URL = "https://oauth2.googleapis.com/token"
+EVENTS_URL = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
 FRESH = 15 * 60
 DAYS = 30
+LOGIN_WAIT = 300
+
+
+class NeedsLogin(Exception):
+    pass
 
 
 def private_write(path, data):
@@ -50,90 +64,159 @@ def private_write(path, data):
     os.replace(tmp, path)
 
 
-def feeds():
-    if not FEEDS.exists():
-        return []
-    lines = (line.strip() for line in FEEDS.read_text().splitlines())
-    return [line for line in lines if line and not line.startswith("#")]
+def client():
+    c = json.loads(CLIENT.read_text()).get("installed")
+    if not c:
+        raise ValueError("not a Desktop app OAuth client")
+    return c
 
 
-def copy_of(url):
-    return CACHE / (hashlib.sha256(url.encode()).hexdigest()[:16] + ".ics")
+def post_token(fields):
+    body = urllib.parse.urlencode(fields).encode()
+    with urllib.request.urlopen(urllib.request.Request(TOKEN_URL, body), timeout=15) as r:
+        return json.load(r)
 
 
-def fetch(url):
-    with urllib.request.urlopen(url, timeout=15) as r:
-        private_write(copy_of(url), r.read())
+def access_token():
+    c = client()
+    try:
+        return post_token({"client_id": c["client_id"], "client_secret": c["client_secret"],
+                           "grant_type": "refresh_token",
+                           "refresh_token": json.loads(TOKEN.read_text())["refresh_token"]})["access_token"]
+    except urllib.error.HTTPError as e:
+        if e.code in (400, 401):                      # revoked, expired, or the client was replaced
+            raise NeedsLogin from None
+        raise
 
 
-def declined(event, me):
-    who = event.get("ATTENDEE", [])
-    for a in who if isinstance(who, list) else [who]:
-        if str(a).lower().removeprefix("mailto:") == me and a.params.get("PARTSTAT") == "DECLINED":
-            return True
-    return False
-
-
-def events_in(ics, now):
-    cal = icalendar.Calendar.from_ical(ics)
-    me = str(cal.get("X-WR-CALNAME", "")).lower()     # a primary calendar is named for its address
-    span = recurring_ical_events.of(cal).between(now - dt.timedelta(days=1), now + dt.timedelta(days=DAYS))
-    for e in span:
-        start = e["DTSTART"].dt
-        if not isinstance(start, dt.datetime):        # all-day
+def fetch_events():
+    now = dt.datetime.now(dt.timezone.utc)
+    query = urllib.parse.urlencode({"singleEvents": "true", "orderBy": "startTime", "maxResults": 60,
+                                    "timeMin": now.isoformat(), "timeMax": (now + dt.timedelta(days=DAYS)).isoformat()})
+    ask = urllib.request.Request(f"{EVENTS_URL}?{query}", headers={"Authorization": "Bearer " + access_token()})
+    try:
+        with urllib.request.urlopen(ask, timeout=15) as r:
+            items = json.load(r).get("items", [])
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            raise NeedsLogin from None
+        raise
+    events = []
+    for e in items:
+        when = e.get("start", {}).get("dateTime")     # (an all-day event has a date instead)
+        if not when or e.get("status") == "cancelled" or e.get("eventType") == "workingLocation":
             continue
-        if str(e.get("STATUS", "")).upper() == "CANCELLED" or declined(e, me):
+        if any(a.get("self") and a.get("responseStatus") == "declined" for a in e.get("attendees", [])):
             continue
-        yield {"start": int(start.timestamp()), "title": str(e.get("SUMMARY", "(no title)"))}
+        start = int(dt.datetime.fromisoformat(when).timestamp())
+        if start > now.timestamp():                   # (timeMin also returns what's under way)
+            events.append({"start": start, "title": e.get("summary", "(no title)")})
+    return events[:40]
 
 
 def refresh(force=False):
-    urls = feeds()
-    if not urls:
+    if not TOKEN.exists():
         OUT.unlink(missing_ok=True)
         return
     old = json.loads(OUT.read_text()) if OUT.exists() else {}
-    stale = time.time() - old.get("fetched", 0) > FRESH
-    error, fetched = "", old.get("fetched", 0)
-    if force or stale or not all(copy_of(u).exists() for u in urls):
-        failed = 0
-        for url in urls:
-            try:
-                fetch(url)
-            except Exception as e:                    # never print e: it can carry the secret URL
-                failed += 1
-                error = type(e).__name__
-        if not failed:
-            fetched = int(time.time())
-    now = dt.datetime.now(dt.timezone.utc)
-    events = []
-    for url in urls:
-        if copy_of(url).exists():
-            events.extend(events_in(copy_of(url).read_bytes(), now))
-    events = sorted((e for e in events if e["start"] > now.timestamp()), key=lambda e: e["start"])
-    private_write(OUT, json.dumps({"fetched": fetched, "error": error, "events": events[:40]}).encode())
+    if not force and time.time() - old.get("fetched", 0) <= FRESH:
+        return
+    answer = {"fetched": old.get("fetched", 0), "error": "", "events": old.get("events", [])}
+    try:
+        answer.update(events=fetch_events(), fetched=int(time.time()))
+    except NeedsLogin:
+        answer["error"] = "login"
+    except Exception as e:
+        answer["error"] = type(e).__name__
+    private_write(OUT, json.dumps(answer).encode())
 
 
-def add():
-    url = getpass.getpass("iCal secret address (not shown): ").strip()
-    if not url.startswith("https://"):
-        sys.exit("that isn't an https address; nothing added")
-    fetch(url)                                        # proves the address before keeping it
-    have = feeds()
-    if url not in have:
-        lines = FEEDS.read_text() if FEEDS.exists() else ""
-        private_write(FEEDS, (lines + url + "\n").encode())
+def open_browser(url):
+    subprocess.Popen(["xdg-open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def wait_for_code(state, url_for):
+    """Google sends the browser back to a one-shot server here, with the code."""
+    got = {}
+
+    class Back(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            if q.get("state") == [state]:
+                got.update(code=q.get("code", [""])[0], error=q.get("error", [""])[0])
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b"Done: you can close this tab." if got.get("code") else b"Not signed in.")
+
+        def log_message(self, *_):                    # the query holds the code: keep it out of the terminal
+            pass
+
+    with http.server.HTTPServer(("127.0.0.1", 0), Back) as server:
+        server.timeout = 2
+        redirect = f"http://127.0.0.1:{server.server_port}"
+        open_browser(url_for(redirect))
+        end = time.time() + LOGIN_WAIT
+        while not got and time.time() < end:
+            server.handle_request()
+    return got, redirect
+
+
+def install_client(path):
+    if path:
+        src = Path(path)
+    else:
+        found = sorted(glob.glob(str(HOME / "Downloads/client_secret_*.json")), key=os.path.getmtime)
+        if not found and not CLIENT.exists():
+            sys.exit("no ~/Downloads/client_secret_*.json: download the OAuth client from Google Cloud first")
+        src = Path(found[-1]) if found else None
+    if src:
+        c = json.loads(src.read_text())
+        if "installed" not in c:
+            sys.exit("that OAuth client isn't the Desktop app type; nothing changed")
+        private_write(CLIENT, src.read_bytes())
+        if not path:
+            os.remove(src)                            # it's a credential: moved, not copied
+
+
+def login(path=None):
+    install_client(path)
+    c = client()
+    state = secrets.token_urlsafe(16)
+    verifier = secrets.token_urlsafe(64)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+
+    def url_for(redirect):
+        return AUTH_URL + "?" + urllib.parse.urlencode({
+            "client_id": c["client_id"], "redirect_uri": redirect, "response_type": "code", "scope": SCOPE,
+            "access_type": "offline", "prompt": "consent", "state": state,
+            "code_challenge": challenge, "code_challenge_method": "S256"})
+
+    print("Sign in in the browser window (it waits 5 minutes).")
+    got, redirect = wait_for_code(state, url_for)
+    if not got.get("code"):
+        sys.exit(f"not signed in ({got.get('error') or 'timed out'})")
+    try:
+        t = post_token({"client_id": c["client_id"], "client_secret": c["client_secret"], "code": got["code"],
+                        "code_verifier": verifier, "grant_type": "authorization_code", "redirect_uri": redirect})
+    except urllib.error.HTTPError as e:
+        sys.exit(f"Google refused the sign-in (HTTP {e.code})")
+    if "refresh_token" not in t:
+        sys.exit("Google gave no refresh token; nothing saved")
+    private_write(TOKEN, json.dumps({"refresh_token": t["refresh_token"]}).encode())
     refresh(force=True)
-    upcoming = json.loads(OUT.read_text())["events"]
-    print(f"{len(feeds())} feed(s), {len(upcoming)} event(s) in the next {DAYS} days")
-    for e in upcoming[:3]:
+    answer = json.loads(OUT.read_text())
+    if answer["error"]:
+        sys.exit(f"signed in, but reading the calendar failed ({answer['error']}): is the Calendar API enabled?")
+    print(f"{len(answer['events'])} event(s) in the next {DAYS} days")
+    for e in answer["events"][:3]:
         print(" ", dt.datetime.fromtimestamp(e["start"]).strftime("%a %-d %b %H:%M"), e["title"])
 
 
 if __name__ == "__main__":
-    signal.alarm(60)                                  # a hung fetch must not outlive the deck
-    if sys.argv[1:] == ["add"]:
-        signal.alarm(0)                               # it waits on a person
-        add()
+    args = sys.argv[1:]
+    if args[:1] == ["login"]:
+        login(*args[1:2])
     else:
-        refresh(force="--force" in sys.argv[1:])
+        signal.alarm(60)                              # a hung fetch must not outlive the deck
+        refresh(force="--force" in args)

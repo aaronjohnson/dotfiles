@@ -1,5 +1,0 @@
-# Example calendar feeds for the deck's clock tab (bin/next-event). The real file is private,
-# ~/.config/deck/calendars.txt, mode 600: these URLs are read access to the calendar and this
-# repo is public. Add one with `next-event add`, which doesn't echo it or leave it in history.
-# Google Calendar > Settings > your calendar > Integrate calendar > Secret address in iCal format.
-https://calendar.google.com/calendar/ical/you%40example.com/private-SECRET/basic.ics
