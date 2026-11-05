@@ -260,6 +260,7 @@ ShellRoot {
         onTriggered: {
             root.readBattery();
             root.readRunner();
+            root.readServe();
         }
     }
 
@@ -387,6 +388,45 @@ ShellRoot {
         onTriggered: if (!ciFailedCheck.running) ciFailedCheck.running = true
     }
     onCiActiveChanged: if (ciActive) ciFailed = false
+
+    // ---- khel serve ----
+    // `khel serve` runs as the user unit khel-serve (~/dotfiles/bin/khel):
+    // up while its cgroup holds processes, read on the same 10 s tick. The
+    // chip shows the build the Steam Deck is offered; a click opens the log,
+    // a right-click stops it.
+    property string serveCgroup: "/sys/fs/cgroup/user.slice/user-" + root.uid
+                                 + ".slice/user@" + root.uid + ".service/app.slice/khel-serve.service/"
+    property string uid: (Quickshell.env("XDG_RUNTIME_DIR") || "/run/user/1000").split("/").pop()
+    property bool serveActive: false
+    property bool serveFailed: false
+    property string serveVersion: ""
+    FileView { id: serveEvents; blockLoading: true; printErrors: false; path: root.serveCgroup + "cgroup.events" }
+    FileView { id: serveVersionFile; blockLoading: true; printErrors: false
+               path: Quickshell.env("HOME") + "/src/khel/build/serve/khel.version" }
+
+    function readServe() {
+        serveEvents.reload();
+        root.serveActive = /populated 1/.test(serveEvents.text());
+        if (root.serveActive) {
+            root.serveFailed = false;
+            serveVersionFile.reload();
+            root.serveVersion = serveVersionFile.text().trim();
+        } else if (!serveFailedCheck.running) {
+            serveFailedCheck.running = true;
+        }
+    }
+    Process {
+        id: serveFailedCheck
+        command: ["systemctl", "--user", "is-failed", "--quiet", "khel-serve.service"]
+        onExited: (code) => root.serveFailed = code === 0
+    }
+    Process { id: serveStop; command: ["systemctl", "--user", "stop", "khel-serve.service"]
+              onExited: root.readServe() }
+    Process { id: serveClear; command: ["systemctl", "--user", "reset-failed", "khel-serve.service"]
+              onExited: root.readServe() }
+    Process { id: serveLog
+              command: ["kitty", "--class", "khel-log", "-o", "background_opacity=0.85", "--title", "khel serve",
+                        "-e", "journalctl", "--user", "-u", "khel-serve", "-f", "-o", "cat", "-n", "300"] }
 
     // "45s", "12m", "1h05"
     function formatAge(secs) {
@@ -1911,6 +1951,48 @@ ShellRoot {
                         out.push("click: switch to " + (root.wifiPartner.endsWith("_6G") ? "6G" : "MLO"));
                       return out.join("\n");
                     }
+                  }
+                }
+              }
+
+              // ---- khel serve: hidden while it's off; a violet chip with the
+              // offered build while it runs; red if it failed. Click: the log;
+              // right-click: stop (or clear the failure) ----
+              Item {
+                id: serveChip
+                anchors.verticalCenter: parent.verticalCenter
+                visible: root.serveActive || root.serveFailed
+                property color tint: root.serveFailed ? root.c.red : root.c.violet
+                width: serveLabel.implicitWidth + 10
+                height: 16
+
+                Rectangle {
+                  anchors.fill: parent
+                  radius: 4
+                  color: serveMouse.containsMouse ? Qt.rgba(serveChip.tint.r, serveChip.tint.g, serveChip.tint.b, 0.25) : "transparent"
+                  border.width: 1
+                  border.color: serveChip.tint
+                }
+                Text {
+                  id: serveLabel
+                  anchors.centerIn: parent
+                  text: root.serveFailed ? "KHEL ✕"
+                        : serveMouse.containsMouse ? "KHEL  log · ⏹"
+                        : "KHEL" + (root.serveVersion !== "" ? " " + root.serveVersion : "")
+                  color: serveChip.tint
+                  font.pixelSize: 10
+                  font.bold: true
+                }
+                MouseArea {
+                  id: serveMouse
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  acceptedButtons: Qt.LeftButton | Qt.RightButton
+                  onClicked: (mouse) => {
+                    if (mouse.button === Qt.LeftButton) { if (!serveLog.running) serveLog.running = true; }
+                    else if (root.serveFailed) serveClear.running = true;
+                    else serveStop.running = true;
                   }
                 }
               }

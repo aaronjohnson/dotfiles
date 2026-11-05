@@ -566,6 +566,17 @@ hl.window_rule({
     center = true,
 })
 
+hl.window_rule({
+    name   = "khel-log-popup",
+    match  = { class = "^khel-log$" },
+    -- khel serve's log from the bar's KHEL chip: floats over everything on
+    -- its own special workspace, like land, and goes with the window.
+    workspace = "special:khel-log",
+    float  = true,
+    size   = "1100 600",
+    center = true,
+})
+
 -- Hyprland-run windowrule
 hl.window_rule({
     name  = "move-hyprland-run",

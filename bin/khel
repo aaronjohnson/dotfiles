@@ -7,14 +7,58 @@
 # whatever's open. In the game, Esc quits.
 #     khel                  play
 #     khel --hour=22        anything after it goes to the game (Trip reads --hour= and --lights)
-#     khel serve            build it and hand it to the Steam Deck over Wi-Fi (Ctrl+C stops)
+#     khel serve            build it and hand it to the Steam Deck over Wi-Fi, in the background
 #     khel serve --watch    and build again on each save; the Deck takes it when khel next starts
+#     khel serve --here     in this terminal instead (Ctrl+C stops)
+#     khel log              follow the serve's output
+#     khel stop             stop it
+#
+# In the background the serve is the user unit khel-serve: its output goes
+# to the journal, and the bar's KHEL chip shows it's up (click: the log;
+# right-click: stop). A second `khel serve` replaces the first, so
+# `khel serve --watch` switches a plain one over.
 set -euo pipefail
 dir=${KHEL_DIR:-$HOME/src/khel}
-if [ "${1:-}" = serve ]; then
-  shift
-  cd "$dir" && exec nix develop -c tools/serve-deck.sh "$@"
-fi
+unit=khel-serve
+case "${1:-}" in
+  serve)
+    shift
+    args=()
+    here=
+    for a in "$@"; do [ "$a" = --here ] && here=1 || args+=("$a"); done
+    if [ -n "$here" ]; then
+      cd "$dir" && exec nix develop -c tools/serve-deck.sh "${args[@]}"
+    fi
+    systemctl --user stop "$unit" 2>/dev/null || true
+    systemctl --user reset-failed "$unit" 2>/dev/null || true
+    # The serve's settings (SKIP_BUILD, KHEL_*) go along with it.
+    env=()
+    while IFS= read -r v; do env+=(--setenv="$v"); done < <(env | grep -E '^(SKIP_BUILD|KHEL_[A-Z_]*)=' || true)
+    since=$(date '+%F %T')
+    systemd-run --user --quiet --unit="$unit" --working-directory="$dir" \
+      -p SuccessExitStatus="130 143 SIGTERM SIGINT" \
+      --description="khel serve${args[*]:+ ${args[*]}}" "${env[@]}" \
+      nix develop -c tools/serve-deck.sh "${args[@]}"
+    # Show the start (the build, then the Deck's lines) and come back: at the
+    # get.sh line, a failed build, the unit stopping, or after five minutes.
+    exec 3< <(journalctl --user -u "$unit" -f -o cat --since "$since")
+    jpid=$!
+    waited=0
+    while [ "$waited" -lt 300 ]; do
+      if IFS= read -r -t 5 line <&3; then
+        echo "$line"
+        case "$line" in *"curl -fsSO"*|"export failed"*) break;; esac
+      else
+        waited=$((waited + 5))
+        systemctl --user -q is-active "$unit" || { echo "khel-serve stopped (khel log)"; break; }
+      fi
+    done
+    kill "$jpid" 2>/dev/null || true
+    echo "Running in the background: khel log, khel stop (or the bar's KHEL chip)."
+    exit;;
+  log) exec journalctl --user -u "$unit" -f -o cat -n 200;;
+  stop) exec systemctl --user stop "$unit";;
+esac
 pkill -f -- '--from-khel-launcher' 2>/dev/null && sleep 0.3 || true
 
 if command -v hyprctl >/dev/null && hyprctl version >/dev/null 2>&1; then
