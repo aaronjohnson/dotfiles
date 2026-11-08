@@ -338,6 +338,12 @@ hl.device({
     sensitivity = -0.5,
 })
 
+-- The wired USB mouse, set up for the left hand; the touchpad keeps its usual buttons.
+hl.device({
+    name        = "-usb-optical-mouse",
+    left_handed = true,
+})
+
 -- Keychron K2 Pro (USB-C or Bluetooth): a US keyboard, side switch left in Mac mode for
 -- the Mac, ChromeOS and Android. US layout, and its Mac media top row types F1-F12 so the
 -- Super+F binds work without Fn. Details in keychron-k2-pro.xkb. It shows up as four
