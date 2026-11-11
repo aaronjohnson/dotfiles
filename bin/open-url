@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Open a link in the browser without leaving anything behind. Super+O, kitty link clicks.
 
-    open-url https://example.org     open it (new tab in a running Epiphany, else a new one)
+    open-url https://example.org     open it (new tab in a running Epiphany, else a new one;
+                                      the sites in CHROME_ONLY open in Chrome instead)
     open-url example.org/path         bare host: https:// is added
     open-url some words               anything else: a web search
     open-url --list                   JSON for the Super+O popup (OpenPopup.qml):
@@ -33,6 +34,9 @@ SEARCH = "https://duckduckgo.com/?q="
 SKIP_HOSTS = re.compile(r"^(accounts\.|login\.|auth\.|sso\.|oauth)")
 SKIP_TITLES = {"Problem Loading Page", "Authorize application", "Sign in", "Redirecting…", "Redirecting..."}
 BROWSER_CLASS = "org.gnome.Epiphany"
+CHROME_CLASS = "google-chrome"
+# sites that don't work in Epiphany (calls, mostly); a host here covers its subdomains too
+CHROME_ONLY = ("meet.google.com", "zoom.us")
 
 
 def normalise(text):
@@ -45,15 +49,22 @@ def normalise(text):
     return SEARCH + quote_plus(t)
 
 
+def needs_chrome(url):
+    host = urlparse(url).hostname or ""
+    return any(host == h or host.endswith("." + h) for h in CHROME_ONLY)
+
+
 def open_url(text):
     url = normalise(text)
-    # Epiphany opens a URL as a new tab in its running window (--new-window is opt-in)
-    cmd = ["epiphany", url]
+    # Both browsers open a URL as a new tab in their running window (--new-window is opt-in)
+    chrome = needs_chrome(url)
+    cmd = ["google-chrome-stable" if chrome else "epiphany", url]
+    browser_class = CHROME_CLASS if chrome else BROWSER_CLASS
     # setsid + no stdio: the browser is not a child of whoever called us (a terminal can close)
     subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                      stderr=subprocess.DEVNULL, start_new_session=True)
     time.sleep(0.3)
-    subprocess.run(["hyprctl", "eval", f'hl.dispatch(hl.dsp.focus({{ window = "class:{BROWSER_CLASS}" }}))'],
+    subprocess.run(["hyprctl", "eval", f'hl.dispatch(hl.dsp.focus({{ window = "class:{browser_class}" }}))'],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     print(url)
 
