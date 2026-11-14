@@ -5,7 +5,7 @@ import Quickshell.Io
 import Quickshell.Hyprland
 
 // ---- Power menu ----
-// Holding the power button opens this on the focused screen (~/dotfiles/bin/power-button);
+// Tapping the power button opens this on the focused screen (~/dotfiles/bin/power-button);
 // `qs ipc call powermenu open` does the same. Arrow keys, Tab or the mouse pick a tile;
 // Enter, Space or a click runs it; 1-5 jump straight to one; Esc or a click
 // outside closes. Hibernate, reboot and power off ask for a second press first.
@@ -19,8 +19,8 @@ Scope {
     property int armed: -1               // tile waiting for its confirming second press
 
     readonly property var actions: [
+        { glyph: "◐", label: "Lock",        cmd: ["loginctl", "lock-session"],             confirm: false },
         { glyph: "⏾", label: "Sleep",       cmd: ["systemctl", "suspend-then-hibernate"], confirm: false },
-        { glyph: "◐", label: "Screensaver", cmd: ["loginctl", "lock-session"],             confirm: false },
         { glyph: "❄", label: "Hibernate",   cmd: ["systemctl", "hibernate"],               confirm: true },
         { glyph: "↻", label: "Reboot",      cmd: ["systemctl", "reboot"],                  confirm: true },
         { glyph: "⏻", label: "Power off",   cmd: ["systemctl", "poweroff"],                confirm: true }

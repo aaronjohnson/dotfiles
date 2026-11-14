@@ -514,10 +514,10 @@ for _, k in ipairs({
     end, { repeating = k.key ~= "F1" and k.key ~= "F5", description = "Media: " .. k.key .. " while radio is on: " .. k.what })
 end
 
--- Power button: tap to lock, hold for the power menu (logind ignores the key, see
--- ~/nixos/power.nix). Not locked: on the lock screen the button does nothing.
-hl.bind("XF86PowerOff", hl.dsp.exec_cmd("~/dotfiles/bin/power-button down"), { description = "Ours: Power: tap locks, hold opens the power menu" })
-hl.bind("XF86PowerOff", hl.dsp.exec_cmd("~/dotfiles/bin/power-button up"), { release = true })
+-- Power button: a tap opens the power menu, Lock first (logind ignores the key, see
+-- ~/nixos/power.nix). A hold can't be told from a tap on this laptop: see bin/power-button.
+-- Not locked: on the lock screen the button does nothing.
+hl.bind("XF86PowerOff", hl.dsp.exec_cmd("~/dotfiles/bin/power-button"), { description = "Ours: Power: tap opens the power menu" })
 
 
 --------------------------------
