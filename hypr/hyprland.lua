@@ -456,6 +456,24 @@ for i = 1, 10 do
     hl.bind(mainMod .. " + SHIFT + " .. key,     hl.dsp.window.move({ workspace = i }), { description = "Workspaces: Move window to workspace 1-10" })
 end
 
+-- Alt+Tab / Alt+Shift+Tab: next / previous window on this workspace.
+-- ({ next = false } goes backwards; "prev" is silently ignored, tested on 0.57.1.)
+hl.bind("ALT + Tab",         hl.dsp.window.cycle_next(),                  { description = "Windows: Cycle next / previous" })
+hl.bind("ALT + SHIFT + Tab", hl.dsp.window.cycle_next({ next = false }), { description = "Windows: Cycle next / previous" })
+
+-- Send the active window to the other monitor's visible workspace, and follow it.
+-- Laptop alone (or lid shut): does nothing.
+hl.bind(mainMod .. " + SHIFT + O", function()
+    local here = hl.get_active_monitor()
+    if not here then return end
+    for _, m in ipairs(hl.get_monitors()) do
+        if m.name ~= here.name and m.active_workspace then
+            hl.dispatch(hl.dsp.window.move({ workspace = m.active_workspace.id }))
+            return
+        end
+    end
+end, { description = "Windows: Move window to the other monitor" })
+
 -- Example special workspace (scratchpad)
 hl.bind(mainMod .. " + S",         hl.dsp.workspace.toggle_special("magic"), { description = "Workspaces: Scratchpad show/hide" })
 hl.bind(mainMod .. " + SHIFT + S", hl.dsp.window.move({ workspace = "special:magic" }), { description = "Workspaces: Move window to scratchpad" })
