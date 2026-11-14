@@ -14,8 +14,9 @@ value. Older dots get fainter and sparser. The current value sits in the middle.
                         the Linux console, whose fonts have no braille)
 
 Reads the same sysfs/procfs files as ~/dotfiles/quickshell/shell.qml and nothing
-else on the fast tick; wifi (nmcli + iw) runs every 20 s, the battery details and
-the CI runner every 10 s. Reading the NPU counters leaves the NPU asleep.
+else on the fast tick; wifi (nmcli + iw, plus the phone fallback: "○ phone"
+standing by, "● phone bt" in use, "phone away" after a failed connect) runs
+every 20 s, the battery details and the CI runner every 10 s. Reading the NPU counters leaves the NPU asleep.
 Standard library only.
 """
 
@@ -92,7 +93,17 @@ CI_STATUS = "/run/github-runner/nixos-intel-npu/ci-status/"
 NPU_DIR = "/sys/class/accel/accel0/device/"
 WIFI_CMD = ("nmcli -t -f IN-USE,SIGNAL,SSID device wifi list --rescan no; echo @@IW; "
             "command -v iw >/dev/null && for i in $(iw dev | awk '/Interface/{print $2}'); "
-            "do iw dev \"$i\" info; iw dev \"$i\" link; done")
+            "do iw dev \"$i\" info; iw dev \"$i\" link; done; "
+            # phone-fallback (~/nixos/phone-fallback.nix): Bluetooth tethering
+            # when Wi-Fi has no internet. Active profiles, timer, last failed
+            # connect, and the Wi-Fi device's own internet check.
+            "echo @@PF; nmcli -t -f NAME con show --active; echo @@T; "
+            "systemctl is-active phone-fallback.timer; "
+            "stat -c %Y /run/phone-fallback/last-fail 2>/dev/null; echo @@C; "
+            "d=$(nmcli -t -f DEVICE,TYPE dev | awk -F: '$2==\"wifi\"{print $1; exit}'); "
+            "[ -n \"$d\" ] && nmcli -g GENERAL.IP4-CONNECTIVITY dev show \"$d\"")
+PHONE_PROFILE = "Pixel-BT"
+PHONE_BACKOFF = 300     # matches phone-fallback.nix
 
 
 class Sampler:
@@ -126,7 +137,8 @@ class Sampler:
         self.ci = dict(installed=False, active=False, failed=False, job=None, step="",
                        pkg="", done=0, total=0, eta=None, readable=True)
         self.ci_rate = []
-        self.wifi = dict(signal=-1, ssid="", links=[], width=0, dbm=0, bitrate=0, ok=None)
+        self.wifi = dict(signal=-1, ssid="", links=[], width=0, dbm=0, bitrate=0, ok=None,
+                         net="", phone="")
         self.wifi_pending = None
         self.wifi_thread = None
         self.next_wifi = self.next_bat = self.next_failed = 0.0
@@ -435,6 +447,8 @@ class Sampler:
         text, self.wifi_pending = self.wifi_pending, None
         w = self.wifi
         nm, _, iw = text.partition("@@IW")
+        iw, _, pf = iw.partition("@@PF")
+        self.take_phone(pf)
         w["ok"] = bool(text)
         w["signal"], w["ssid"] = -1, ""
         for line in nm.splitlines():
@@ -480,6 +494,48 @@ class Sampler:
             active = order[0]
         w["links"] = [(i, links[i], i == active) for i in order]
         self.H["wifi"].push(w["signal"] if w["signal"] >= 0 else None)
+
+    def take_phone(self, pf):
+        """phone: "" (no fallback), off, standby, retry, active.
+        net: the Wi-Fi's own internet check, "" when unknown or full."""
+        w = self.wifi
+        active, _, rest = pf.partition("@@T")
+        timer, _, conn = rest.partition("@@C")
+        tl = timer.split()
+        on = bool(tl) and tl[0] == "active"
+        failed = int(tl[1]) if len(tl) > 1 and tl[1].isdigit() else 0
+        if PHONE_PROFILE in [l.strip() for l in active.splitlines()]:
+            w["phone"] = "active"
+        elif not pf.strip():
+            w["phone"] = ""
+        elif not on:
+            w["phone"] = "off"
+        elif time.time() - failed < PHONE_BACKOFF:
+            w["phone"] = "retry"
+        else:
+            w["phone"] = "standby"
+        m = re.search(r"\((\w+)\)", conn)
+        state = m.group(1) if m else ""
+        w["net"] = {"none": "no internet", "limited": "no internet",
+                    "portal": "login page"}.get(state, "") if w["ssid"] else ""
+
+
+def uplink_parts(s, G):
+    """Header pieces after the SSID: the Wi-Fi's internet state and the
+    phone fallback. Standby is a quiet dot; only trouble or use is loud."""
+    w, out = s.wifi, []
+    if w["net"]:
+        out.append((" " + w["net"], "orange"))
+    ph = w["phone"]
+    if ph == "active":
+        out.append(("  " + G["on"] + " phone bt", "yellow"))
+    elif ph == "retry":
+        out.append(("  " + G["off"] + " phone away", "orange"))
+    elif ph == "standby":
+        out.append(("  " + G["off"] + " phone", "muted"))
+    elif ph == "off":
+        out.append(("  fallback off", "muted"))
+    return out
 
 
 # ---------------------------------------------------------------- drawing
@@ -1001,6 +1057,7 @@ def render(s, W, H, mode):
                      "orange" if b["degraded"] else "green", 0))
     if s.wifi["ssid"]:
         head.append(("  " + s.wifi["ssid"], "cyan", 0))
+    head += [(t, r, 0) for t, r in uplink_parts(s, G)]
     x = 0
     for t, role, attr in head:
         buf.put(x, 0, t, role, attr)
@@ -1255,6 +1312,7 @@ class FbRenderer:
                           "orange" if b["degraded"] else "green", False))
         if s.wifi["ssid"]:
             parts.append(("   " + s.wifi["ssid"], "cyan", False))
+        parts += [(t, r, False) for t, r in uplink_parts(s, G)]
         x, y = margin, int(8 * u)
         for t, r, bold in parts:
             f = self.font(13 * u, bold)
