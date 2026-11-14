@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# uplink — see and steer how this laptop reaches the internet, and get out of
+# a pickle by hand. Works offline; needs no sudo except pause/resume (polkit).
+# The automatic side is phone-fallback (~/nixos/phone-fallback.nix); the
+# states and escape ladder are in ~/nixos/docs/uplinks.md.
+#
+#   uplink               status: what we're on, whether it has internet, the
+#                        phone tether, the fallback, and saved Wi-Fi in range
+#   uplink hotspot       join the phone's Wi-Fi hotspot now (turn it on first)
+#   uplink phone         bring up the Bluetooth tether now
+#   uplink skip          leave this Wi-Fi and stop auto-joining it (no files moved)
+#   uplink unskip NAME   let NAME auto-join again
+#   uplink pause|resume  stop/start the automatic fallback (until boot)
+#   uplink reset         the big hammer: drop the tether, Wi-Fi radio off and on
+#
+# The hotspot's profile name comes from ~/.config/uplinks.env (HOTSPOT=...),
+# kept out of this public repo.
+set -uo pipefail
+
+BT=Pixel-BT
+# shellcheck source=/dev/null
+[[ -f ~/.config/uplinks.env ]] && source ~/.config/uplinks.env
+HOTSPOT=${HOTSPOT:-}
+
+wifi_dev() { nmcli -t -f DEVICE,TYPE dev | awk -F: '$2=="wifi"{print $1; exit}'; }
+net_of() {   # "full" | "no internet" | "login page" | "unknown"
+  case "$(nmcli -g GENERAL.IP4-CONNECTIVITY dev show "$1" 2>/dev/null)" in
+    *full*) echo full ;; *none*|*limited*) echo "no internet" ;;
+    *portal*) echo "login page" ;; *) echo unknown ;;
+  esac
+}
+bt_up() { [[ -n $(nmcli -g GENERAL.STATE con show "$BT" 2>/dev/null) ]]; }
+age() { [[ -f $1 ]] && echo $(( $(date +%s) - $(stat -c %Y "$1") )) || echo -1; }
+
+status() {
+  local dev here
+  dev=$(wifi_dev)
+  here=$(nmcli -g GENERAL.CONNECTION dev show "$dev" 2>/dev/null)
+  printf 'wifi      %s\n' "$(nmcli radio wifi)"
+  if [[ -n $here ]]; then
+    printf 'on        %s (priority %s): %s\n' "$here" \
+      "$(nmcli -g connection.autoconnect-priority con show "$here")" "$(net_of "$dev")"
+  else
+    printf 'on        no Wi-Fi\n'
+  fi
+  if bt_up; then printf 'phone     ON its Bluetooth tether (slow)\n'
+  elif nmcli -t -f NAME con show | grep -qxF "$BT"; then
+    local f; f=$(age /run/phone-fallback/last-fail)
+    if (( f >= 0 && f < 300 )); then printf 'phone     not reachable %ss ago; retry after 300s\n' "$f"
+    else printf 'phone     standing by\n'; fi
+  else printf 'phone     no %s profile (ops/phone-fallback-setup.sh)\n' "$BT"; fi
+  printf 'fallback  %s\n' "$(systemctl is-active phone-fallback.timer)"
+  printf 'internet  %s\n' "$(nmcli networking connectivity)"
+  echo
+  echo "saved Wi-Fi in range (higher priority wins; the fallback moves off a dead one to a higher one):"
+  local seen line name f
+  seen=$(nmcli -g SSID dev wifi list --rescan no | sed 's/\\:/:/g')
+  while IFS= read -r line; do
+    [[ ${line##*:} == 802-11-wireless ]] || continue
+    name=${line%:*}; name=${name//\\:/:}
+    mapfile -t f < <(nmcli -g connection.autoconnect,connection.autoconnect-priority,802-11-wireless.ssid con show "$name")
+    grep -qxF -- "${f[2]}" <<<"$seen" || continue
+    printf '  %3s  %s%s%s\n' "${f[1]}" "$name" \
+      "$([[ ${f[0]} == no ]] && echo '  (skipped: uplink unskip)')" \
+      "$([[ $name == "$here" ]] && echo '  <- on')"
+  done < <(nmcli -t -f NAME,TYPE con show) | sort -rn
+}
+
+case "${1:-status}" in
+  status) status ;;
+  hotspot)
+    [[ -n $HOTSPOT ]] || { echo "set HOTSPOT=... in ~/.config/uplinks.env" >&2; exit 1; }
+    nmcli dev wifi rescan 2>/dev/null
+    nmcli -w 30 con up "$HOTSPOT" ;;
+  phone) nmcli -w 30 con up "$BT" ;;
+  skip)
+    here=$(nmcli -g GENERAL.CONNECTION dev show "$(wifi_dev)")
+    [[ -n $here ]] || { echo "not on a Wi-Fi"; exit 1; }
+    nmcli con modify "$here" connection.autoconnect no
+    nmcli con down "$here"
+    echo "left '$here'; it won't auto-join until: uplink unskip '$here'" ;;
+  unskip)
+    [[ -n ${2:-} ]] || { echo "uplink unskip NAME" >&2; exit 1; }
+    nmcli con modify "$2" connection.autoconnect yes && echo "'$2' may auto-join again" ;;
+  pause)  systemctl stop phone-fallback.timer && echo "fallback paused until boot (uplink resume)" ;;
+  resume) systemctl start phone-fallback.timer && echo "fallback running" ;;
+  reset)
+    bt_up && nmcli con down "$BT"
+    nmcli radio wifi off; sleep 2; nmcli radio wifi on
+    echo "Wi-Fi restarted; NetworkManager now joins the best saved network in range" ;;
+  -h|--help|help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) echo "uplink: unknown '$1' (uplink help)" >&2; exit 1 ;;
+esac
