@@ -44,6 +44,10 @@ ShellRoot {
     property int wifiWidth: 0            // channel width (MHz) of the active link
     property int wifiDbm: 0
     property real wifiBitrate: 0         // Mbit/s
+    // phone-fallback (~/nixos/phone-fallback.nix): Bluetooth tethering to the
+    // phone when Wi-Fi has no internet. Read on the same 20 s wifi tick.
+    property string phoneState: ""       // "", off, standby, retry (just failed), active
+    property string wifiNet: ""          // "", "no internet", "login page": the Wi-Fi's own check
 
     // ---- Sunrise / sunset ----
     // Calculated here from latitude/longitude (the standard sunrise equation,
@@ -1339,6 +1343,25 @@ ShellRoot {
         root.wifiBitrate = bitrate;
     }
 
+    // Same states as `hud`: active when the Pixel-BT profile is up, retry for
+    // 5 min after a failed connect (the fallback's backoff), off when its
+    // timer is stopped, otherwise standby.
+    function parsePhone(text) {
+        var a = text.split("@@T"), active = a[0];
+        var b = (a.length > 1 ? a[1] : "").split("@@C"), conn = b.length > 1 ? b[1] : "";
+        var t = b[0].trim().split(/\s+/);
+        var failed = t.length > 1 ? parseInt(t[1]) : 0;
+        if (active.split("\n").some(function (l) { return l.trim() === "Pixel-BT"; }))
+            root.phoneState = "active";
+        else if (text.trim() === "") root.phoneState = "";
+        else if (t[0] !== "active") root.phoneState = "off";
+        else if (!isNaN(failed) && Date.now() / 1000 - failed < 300) root.phoneState = "retry";
+        else root.phoneState = "standby";
+        var m = conn.match(/\((\w+)\)/), st = m ? m[1] : "";
+        root.wifiNet = st === "none" || st === "limited" ? "no internet"
+                     : st === "portal" ? "login page" : "";
+    }
+
     // /proc/net/dev holds byte counters for every interface. Reading it through
     // FileView happens inside quickshell itself, so no process is spawned per sample.
     FileView {
@@ -1389,11 +1412,18 @@ ShellRoot {
         command: ["sh", "-c",
                   "nmcli -t -f IN-USE,SIGNAL,SSID device wifi list --rescan no; echo @@IW; " +
                   "command -v iw >/dev/null && for i in $(iw dev | awk '/Interface/{print $2}'); " +
-                  "do iw dev \"$i\" info; iw dev \"$i\" link; done"]
+                  "do iw dev \"$i\" info; iw dev \"$i\" link; done; " +
+                  "echo @@PF; nmcli -t -f NAME con show --active; echo @@T; " +
+                  "systemctl is-active phone-fallback.timer; " +
+                  "stat -c %Y /run/phone-fallback/last-fail 2>/dev/null; echo @@C; " +
+                  "d=$(nmcli -t -f DEVICE,TYPE dev | awk -F: '$2==\"wifi\"{print $1; exit}'); " +
+                  "[ -n \"$d\" ] && nmcli -g GENERAL.IP4-CONNECTIVITY dev show \"$d\""]
         stdout: StdioCollector {
             onStreamFinished: {
-                var sections = this.text.split("@@IW");
+                var pf = this.text.split("@@PF");
+                var sections = pf[0].split("@@IW");
                 root.parseIw(sections.length > 1 ? sections[1] : "");
+                root.parsePhone(pf.length > 1 ? pf[1] : "");
                 var signal = -1, ssid = "";
                 var lines = sections[0].split("\n");
                 for (var i = 0; i < lines.length; i++) {
@@ -1865,8 +1895,18 @@ ShellRoot {
                         : root.wifiSignal + "% " + (root.wifiSsid.endsWith("_6G") ? "6G"
                                                   : root.wifiSsid.endsWith("_MLO") ? "MLO" : "")
                   color: wifiSwitcher.running ? root.c.dim
-                         : root.wifiSignal < 0 ? root.c.red : root.c.cyan
+                         : root.wifiSignal < 0 ? root.c.red
+                         : root.wifiNet !== "" ? root.c.orange : root.c.cyan
                   font.pixelSize: 14
+                }
+
+                // Wi-Fi joined but its own internet check fails.
+                Text {
+                  anchors.verticalCenter: parent.verticalCenter
+                  visible: root.wifiSignal >= 0 && root.wifiNet !== ""
+                  text: root.wifiNet
+                  color: root.c.orange
+                  font.pixelSize: 12
                 }
 
                 // One chip per MLO link (e.g. "5 6"): bright = carrying traffic now,
@@ -1899,6 +1939,29 @@ ShellRoot {
                   }
                 }
 
+                // Phone fallback: hidden while standing by. Filled while the
+                // laptop is on the phone's Bluetooth tether; an orange outline
+                // while it can't reach the phone.
+                Rectangle {
+                  anchors.verticalCenter: parent.verticalCenter
+                  visible: root.phoneState === "active" || root.phoneState === "retry"
+                  width: phoneChip.implicitWidth + 8
+                  height: 16
+                  radius: 3
+                  color: root.phoneState === "active" ? root.c.yellow : "transparent"
+                  border.color: root.phoneState === "active" ? root.c.yellow : root.c.orange
+                  border.width: 1
+
+                  Text {
+                    id: phoneChip
+                    anchors.centerIn: parent
+                    text: root.phoneState === "active" ? "phone bt" : "phone away"
+                    color: root.phoneState === "active" ? root.c.bg : root.c.orange
+                    font.pixelSize: 11
+                    font.bold: root.phoneState === "active"
+                  }
+                }
+
                 TapHandler {
                   onTapped: if (root.wifiPartner !== "" && !wifiSwitcher.running) wifiSwitcher.running = true
                 }
@@ -1916,7 +1979,7 @@ ShellRoot {
                 anchor.edges: Edges.Bottom | Edges.Left
                 anchor.gravity: Edges.Bottom | Edges.Right
                 anchor.margins.top: 8
-                visible: wifiHover.hovered && root.wifiSignal >= 0
+                visible: wifiHover.hovered && (root.wifiSignal >= 0 || root.phoneState === "active")
                 implicitWidth: popupText.implicitWidth + 24
                 implicitHeight: popupText.implicitHeight + 16
                 color: "transparent"
@@ -1943,6 +2006,13 @@ ShellRoot {
                                  + (root.bandOf(l.freq) + " GHz").padEnd(7) + l.freq + " MHz"
                                  + (l.active ? "  " + root.wifiWidth + " MHz wide" : "  idle"));
                       }
+                      if (root.wifiSignal < 0) out = ["wifi offline"];
+                      if (root.wifiNet !== "") out.push("wifi: " + root.wifiNet);
+                      var ph = { active: "● phone: on its Bluetooth tether (slow)",
+                                 retry: "○ phone: not reachable, retrying in 5 min",
+                                 standby: "○ phone: standing by over Bluetooth",
+                                 off: "phone fallback off" }[root.phoneState];
+                      if (ph) out.push(ph);
                       if (root.wifiPartner !== "")
                         out.push("click: switch to " + (root.wifiPartner.endsWith("_6G") ? "6G" : "MLO"));
                       return out.join("\n");
