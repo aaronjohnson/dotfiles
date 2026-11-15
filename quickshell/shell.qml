@@ -658,7 +658,7 @@ ShellRoot {
         gpuMhzHist = [];
         readDetails();
         if (!wifiReader.running) wifiReader.running = true;
-    }
+    } else statsPinned = false;          // a key-opened dropdown unpins once closed
 
     // Where this machine keeps its sensors, found once at startup (hwmon and
     // card numbers can change between boots): the coretemp "Package id 0"
@@ -1503,6 +1503,18 @@ ShellRoot {
     IpcHandler {
         target: "bar"
         function toggleAutoHide(): void { root.autoHide = !root.autoHide; }
+    }
+
+    // The HUD dropdown from a key (Keychron Q11 M1 -> F13). Opened this way it stays
+    // open (statsPinned) until the key again or a click on the HUD closes it.
+    property bool statsPinned: false
+    IpcHandler {
+        target: "stats"
+        function toggle(): void {
+            if (root.statsOpen) { root.statsScreen = ""; return; }
+            root.statsScreen = Hyprland.focusedMonitor ? Hyprland.focusedMonitor.name : "";
+            root.statsPinned = root.statsOpen;
+        }
     }
 
     Variants {
@@ -2775,7 +2787,7 @@ ShellRoot {
 
               Timer {
                 interval: 800
-                running: statsArea.open && !barHover.hovered && !statsPopupHover.hovered
+                running: statsArea.open && !root.statsPinned && !barHover.hovered && !statsPopupHover.hovered
                 onTriggered: root.statsScreen = ""
               }
 

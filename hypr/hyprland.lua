@@ -413,6 +413,10 @@ hl.bind(mainMod .. " + F2", hl.dsp.exec_cmd("qs ipc call keys toggle"), { descri
 -- chips to commit drafts, push, bump ~/nixos, ship .ship targets and switch NixOS.
 hl.bind(mainMod .. " + F12", hl.dsp.exec_cmd("qs ipc call deck toggle"), { description = "Ours: Land / ship deck: commit, push, ship, switch" })
 hl.bind(mainMod .. " + F11", hl.dsp.exec_cmd("qs ipc call deck toggle"), { description = "Ours: Land / ship deck: commit, push, ship, switch" })
+-- Keychron Q11 macro keys, set in Keychron Launcher to send F13-F17 (no other key does):
+-- M1 = F13 the HUD dropdown (stays open until pressed again), M2 = F14 suchi. M3-M5 free.
+hl.bind("F13", hl.dsp.exec_cmd("qs ipc call stats toggle"), { description = "Ours: HUD dropdown (Q11 M1)" })
+hl.bind("F14", hl.dsp.exec_cmd("qs ipc call deck toggle"),  { description = "Ours: Land / ship deck (Q11 M2)" })
 -- +Shift: the same in a terminal, one y/N question at a time (bin/land, bin/ship).
 hl.bind(mainMod .. " + SHIFT + F12", hl.dsp.exec_cmd("kitty --class land -o background_opacity=0.85 --title 'Land' -e ~/dotfiles/bin/land"), { description = "Ours: Land in a terminal: commit drafts, switch NixOS" })
 hl.bind(mainMod .. " + SHIFT + F11", hl.dsp.exec_cmd("kitty --class land -o background_opacity=0.85 --title 'Ship' -e ~/dotfiles/bin/ship"), { description = "Ours: Ship in a terminal: deploy what changed" })
