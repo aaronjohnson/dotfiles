@@ -432,8 +432,9 @@ hl.bind(mainMod .. " + F12", hl.dsp.exec_cmd("qs ipc call deck toggle"), { descr
 hl.bind(mainMod .. " + F11", hl.dsp.exec_cmd("qs ipc call deck toggle"), { description = "Ours: Land / ship deck: commit, push, ship, switch" })
 -- Keychron Q11 macro keys, set in Keychron Launcher to send F13-F17 (no other key does):
 -- M1 = F13 the HUD dropdown (stays open until pressed again), M2 = F14 suchi. M3-M5 free.
-hl.bind("F13", hl.dsp.exec_cmd("qs ipc call stats toggle"), { description = "Ours: HUD dropdown (Q11 M1)" })
-hl.bind("F14", hl.dsp.exec_cmd("qs ipc call deck toggle"),  { description = "Ours: Land / ship deck (Q11 M2)" })
+-- xkb names F13-F17 XF86Tools, XF86Launch5..8 (evdev keymap), so binds use those names.
+hl.bind("XF86Tools",   hl.dsp.exec_cmd("qs ipc call stats toggle"), { description = "Ours: HUD dropdown (Q11 M1 = F13)" })
+hl.bind("XF86Launch5", hl.dsp.exec_cmd("qs ipc call deck toggle"),  { description = "Ours: Land / ship deck (Q11 M2 = F14)" })
 -- The Q11's F11/F12 stay Volume Down/Up (its knobs send the same codes), so Super+F11/F12
 -- arrive as Super+Volume; they open suchi too. Plain volume keys are untouched.
 hl.bind(mainMod .. " + XF86AudioRaiseVolume", hl.dsp.exec_cmd("qs ipc call deck toggle"), { description = "Ours: Land / ship deck (Q11 Super+F12)" })
