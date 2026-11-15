@@ -35,8 +35,17 @@ SKIP_HOSTS = re.compile(r"^(accounts\.|login\.|auth\.|sso\.|oauth)")
 SKIP_TITLES = {"Problem Loading Page", "Authorize application", "Sign in", "Redirecting…", "Redirecting..."}
 BROWSER_CLASS = "org.gnome.Epiphany"
 CHROME_CLASS = "google-chrome"
-# sites that don't work in Epiphany (calls, mostly); a host here covers its subdomains too
-CHROME_ONLY = ("meet.google.com", "zoom.us")
+# sites that open in Chrome: calls that don't work in Epiphany, and the signed-in services
+# (claude.ai, Google, Firebase, GitHub, Keychron Launcher's WebHID). A host here covers its
+# subdomains too. open-url is also the system's link handler (open-url/open-url.desktop), so
+# logins and links from other programs follow this list.
+CHROME_ONLY = ("meet.google.com", "zoom.us",
+               "claude.ai", "claude.com", "anthropic.com",
+               "accounts.google.com", "mail.google.com", "drive.google.com", "docs.google.com",
+               "calendar.google.com", "gemini.google.com", "aistudio.google.com",
+               "console.cloud.google.com", "console.firebase.google.com", "firebase.google.com",
+               "auth.firebase.tools", "web.app", "github.com",
+               "launcher.keychron.com", "stripe.com")
 
 
 def normalise(text):

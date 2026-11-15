@@ -1,0 +1,11 @@
+[Desktop Entry]
+# The default link handler (xdg-open, logins, links from apps): open-url picks the browser,
+# Chrome for the signed-in sites in its CHROME_ONLY list, Epiphany for the rest.
+# Installed as a symlink in ~/.local/share/applications; set as the default for http(s)
+# and HTML in ~/.config/mimeapps.list.
+Type=Application
+Name=Open link (open-url)
+Exec=/home/amj/dotfiles/bin/open-url %u
+NoDisplay=true
+Terminal=false
+MimeType=x-scheme-handler/http;x-scheme-handler/https;text/html;application/xhtml+xml;
