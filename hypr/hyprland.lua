@@ -344,6 +344,23 @@ hl.device({
     left_handed = true,
 })
 
+-- Keychron Nape Pro trackball, on its Link-KM 2.4 GHz dongle (3434:d026; side switch on
+-- "G"; its Bluetooth won't pair with this laptop). Held with M1/M2 on the left, so the
+-- ball's movement is turned 270 degrees (clockwise; found by rolling up and right), and
+-- slowed a little. DPI is set on the trackball (Keychron Launcher). The dongle has two
+-- pointer devices and the ball moved over to the second after Launcher switched the
+-- Nape to Windows mode, so both get the same settings.
+for _, dev in ipairs({
+    "keychron--keychron-link-km",
+    "keychron--keychron-link-km-keyboard-2",
+}) do
+    hl.device({
+        name        = dev,
+        rotation    = 270,
+        sensitivity = -0.4,
+    })
+end
+
 -- Keychron K2 Pro (USB-C or Bluetooth): a US keyboard, side switch left in Mac mode for
 -- the Mac, ChromeOS and Android. US layout, and its Mac media top row types F1-F12 so the
 -- Super+F binds work without Fn. Details in keychron-k2-pro.xkb. It shows up as four
@@ -417,6 +434,10 @@ hl.bind(mainMod .. " + F11", hl.dsp.exec_cmd("qs ipc call deck toggle"), { descr
 -- M1 = F13 the HUD dropdown (stays open until pressed again), M2 = F14 suchi. M3-M5 free.
 hl.bind("F13", hl.dsp.exec_cmd("qs ipc call stats toggle"), { description = "Ours: HUD dropdown (Q11 M1)" })
 hl.bind("F14", hl.dsp.exec_cmd("qs ipc call deck toggle"),  { description = "Ours: Land / ship deck (Q11 M2)" })
+-- The Q11's F11/F12 stay Volume Down/Up (its knobs send the same codes), so Super+F11/F12
+-- arrive as Super+Volume; they open suchi too. Plain volume keys are untouched.
+hl.bind(mainMod .. " + XF86AudioRaiseVolume", hl.dsp.exec_cmd("qs ipc call deck toggle"), { description = "Ours: Land / ship deck (Q11 Super+F12)" })
+hl.bind(mainMod .. " + XF86AudioLowerVolume", hl.dsp.exec_cmd("qs ipc call deck toggle"), { description = "Ours: Land / ship deck (Q11 Super+F11)" })
 -- +Shift: the same in a terminal, one y/N question at a time (bin/land, bin/ship).
 hl.bind(mainMod .. " + SHIFT + F12", hl.dsp.exec_cmd("kitty --class land -o background_opacity=0.85 --title 'Land' -e ~/dotfiles/bin/land"), { description = "Ours: Land in a terminal: commit drafts, switch NixOS" })
 hl.bind(mainMod .. " + SHIFT + F11", hl.dsp.exec_cmd("kitty --class land -o background_opacity=0.85 --title 'Ship' -e ~/dotfiles/bin/ship"), { description = "Ours: Ship in a terminal: deploy what changed" })
