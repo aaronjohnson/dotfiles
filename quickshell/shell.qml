@@ -1525,6 +1525,15 @@ ShellRoot {
           required property var modelData
           property bool revealed: false
 
+          // The stats dropdown hangs off the bar, so opening it from a key (stats
+          // IPC) has to reveal the bar on that screen first, or neither shows.
+          Connections {
+            target: root
+            function onStatsScreenChanged() {
+              if (root.statsScreen === screenScope.modelData.name) screenScope.revealed = true;
+            }
+          }
+
           // A 1 px invisible strip along the top edge. Touching it reveals the bar.
           PanelWindow {
             screen: screenScope.modelData
