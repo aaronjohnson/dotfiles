@@ -22,6 +22,8 @@ What it looks for:
     '#' comments. A term with a capital letter matches that case only (so "Don" doesn't
     catch "don't"); an all-lowercase term matches any case; "re:<regex>" is a regex.
   - email addresses, except noreply / example ones.
+In ship mode (paths), ~/.config/git/private-allow.txt can permit listed terms under a path
+prefix of one repo (see allowed()); never an email address.
 """
 
 import json
@@ -158,6 +160,29 @@ def file_lines(repo, paths):
     return out
 
 
+def allowed(repo, hits):
+    """Drop hits that ~/.config/git/private-allow.txt permits (ship mode only). One rule a line:
+        <repo path>  <path prefix>  <term>, <term>...
+    e.g. "~/src/some-site  public/family/  Alice, Bob": those terms may appear in files
+    under that prefix of that repo, such as a family page behind a private link. The rules
+    name private terms, so they live beside private-terms.txt, never in a repo. Email
+    addresses are never allowed. '#' starts a comment."""
+    f = TERMS.parent / "private-allow.txt"
+    if not f.exists():
+        return hits
+    here = Path(repo).expanduser().resolve()
+    rules = []
+    for line in f.read_text().splitlines():
+        line = line.split("#", 1)[0].strip()
+        parts = line.split(None, 2)
+        if len(parts) == 3 and Path(parts[0]).expanduser().resolve() == here:
+            rules.append((parts[1], {t.strip() for t in parts[2].split(",") if t.strip()}))
+    def ok(where, name):
+        path = where.split(":", 1)[0].replace(" (file name)", "")
+        return not name.startswith("email ") and any(path.startswith(p) and name in ts for p, ts in rules)
+    return [h for h in hits if not ok(h[0], h[1])]
+
+
 def report(hits, what):
     print(f"public-guard: {len(hits)} private mention(s) in {what}:", file=sys.stderr)
     for where, name, text in hits[:20]:
@@ -229,7 +254,7 @@ def main():
         return
     if mode == "paths":
         repo = sys.argv[2]
-        hits = scan(file_lines(repo, sys.argv[3:]), patterns())
+        hits = allowed(repo, scan(file_lines(repo, sys.argv[3:]), patterns()))
         if hits:
             report(hits, "files about to be deployed")
             print(f"Blocked: {', '.join(sorted({w for _, w, _ in hits}))[:120]}", file=sys.stderr)

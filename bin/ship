@@ -15,6 +15,8 @@
 #     @email someone@example.com   then offer to email that entry: opens a filled-in Gmail compose
 #                                  window in the browser, so you read it and press Send yourself
 #     @from you@example.com        which signed-in Gmail account the compose window opens in
+#     @needs gcloud firebase       logins checked (bin/creds) before deploying; firebase is
+#                                  checked anyway when the command runs firebase
 # Runs are logged to <repo>/ops/logs/ when that exists (else $XDG_STATE_HOME/ship/).
 #
 # One target at a time (the quickshell deck, Super+F12/F11, runs this; a click is the "yes"):
@@ -54,6 +56,8 @@ ship_target() {
     notify "Ship held: $name ✗" "$rname: private terms in what would deploy" 0
     return 1
   fi
+  # logins first: a stale one stops here, before anything deploys (suchi shows Log in)
+  preflight "$repo" "$name" "$cmd" || return 1
   ask "Ship $name from $rname?" || return 1
   local logdir="$repo/ops/logs"; [[ -d "$logdir" ]] || logdir="${XDG_STATE_HOME:-$HOME/.local/state}/ship"
   mkdir -p "$logdir" "$repo/.git/ship"
@@ -83,10 +87,35 @@ ship_target() {
   return 1
 }
 
+# Which logins a target needs: the repo's "@needs gcloud firebase" line in .ship, plus firebase
+# whenever the command runs it. Each is checked with bin/creds (a real call, no prompt).
+preflight() {
+  local repo="$1" name="$2" cmd="$3" need n line fix
+  need=" $(setting "$repo" needs) "
+  [[ "$cmd" == *firebase* && "$need" != *" firebase "* ]] && need+="firebase "
+  for n in $need; do
+    line=$("$HOME/dotfiles/bin/creds" "$n") && continue
+    fix=$("$HOME/dotfiles/bin/creds" --fix-cmd "$n")
+    printf '%s\n' "$line"
+    printf '\n\e[1m%s needs a fresh %s login before it ships.\e[0m\n' "$name" "$n"
+    if [[ -n "${LAND_YES:-}" ]]; then
+      echo "NEEDS LOGIN: run \`$fix\` (the Log in button, or the notification)."
+      "$HOME/dotfiles/bin/reauth" --notify "Ship $name" "$fix"
+      return 1
+    fi
+    ask "Run \`$fix\` here (opens the browser)?" || return 1
+    bash -c "$fix" || return 1
+    "$HOME/dotfiles/bin/creds" "$n" || return 1
+  done
+  return 0
+}
+
 # A failed run whose log says the login expired: print the command that logs in again (else fail).
 # Firebase CLI tokens lapse after a while idle (first seen 2026-10-18).
 reauth_fix() {
-  if grep -q 'firebase login --reauth' "$1"; then
+  if grep -qE 'gcloud auth login|Reauthentication failed' "$1"; then
+    echo "gcloud auth login"
+  elif grep -q 'firebase login --reauth' "$1"; then
     # pinned firebase from nixpkgs, never npx (it runs whatever npm serves); the login is
     # stored in ~/.config/configstore, so every project's devShell firebase sees it
     if command -v firebase >/dev/null; then echo "firebase login --reauth"

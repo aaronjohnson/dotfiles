@@ -37,6 +37,9 @@ Scope {
     function note(state, label, repo, detail) {
         const t = new Date().toTimeString().slice(0, 5);
         log = log.concat([{ t: t, state: state, label: label, repo: repo, detail: detail || "" }]).slice(-40);
+        // and the running log on disk, which outlives the panel: ~/.local/state/suchi/log.txt
+        Quickshell.execDetached(["sh", "-c", 'd="${XDG_STATE_HOME:-$HOME/.local/state}/suchi"; mkdir -p "$d"; printf "%s  %-5s  %s  %s  %s\\n" "$(date "+%F %T")" "$1" "$2" "$3" "$4" >> "$d/log.txt"',
+                                 "sh", state, label, repo || "", detail || ""]);
         conclude();
     }
 
@@ -259,7 +262,8 @@ Scope {
     function run(repo, label, args) {
         if (!idle) return;
         busyRepo = repo; busyLabel = label; busyLine = ""; busyErr = "";
-        actionProc.command = ["env", "LAND_YES=1"].concat(args);
+        // through suchi-run: the whole output is kept in ~/.local/state/suchi/runs/ (see bin/suchi-run)
+        actionProc.command = ["env", "LAND_YES=1", home + "/dotfiles/bin/suchi-run", label].concat(args);
         actionProc.running = true;
     }
 

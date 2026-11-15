@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# suchi-run LABEL CMD...: run one suchi step (Super+F12/F11) and keep its whole output.
+# The output goes to suchi as before (stdout, stderr folded in) and to
+#     ~/.local/state/suchi/runs/<UTC time>-<label>.log
+# and a start and an end line go to the running log ~/.local/state/suchi/log.txt (suchi's
+# own messages land there too). Both survive reboots, unlike suchi's in-memory panel.
+# Exits with CMD's status.
+set -u
+label="$1"; shift
+dir="${XDG_STATE_HOME:-$HOME/.local/state}/suchi"
+mkdir -p "$dir/runs"
+slug=$(printf '%s' "$label" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-40)
+run="$dir/runs/$(date -u +%Y%m%dT%H%M%SZ)-$slug.log"
+printf '%s  run    %s  (%s)\n' "$(date '+%F %T')" "$label" "$*" >> "$dir/log.txt"
+{ printf '# %s  %s\n# %s\n' "$(date '+%F %T')" "$label" "$*"; } > "$run"
+"$@" 2>&1 | tee -a "$run"
+code=${PIPESTATUS[0]}
+printf '%s  exit %-3s %s  output: %s\n' "$(date '+%F %T')" "$code" "$label" "$run" >> "$dir/log.txt"
+# keep the last 200 run files
+ls -1t "$dir/runs" | tail -n +201 | while read -r old; do rm -f "$dir/runs/$old"; done
+exit "$code"

@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# creds [gcloud|firebase ...]: are the deploy logins hot? Checks without ever prompting.
+#   creds                 check gcloud and firebase, one line each
+#   creds gcloud          check one (any order, several allowed)
+#   creds --fix-cmd NAME  print the command that logs NAME in again (for ship / suchi)
+# Each check makes a real call (an access token; a project list), so "ok" means it works now,
+# not just that a login is on file. Exit 0 if every checked login is ok, 1 if any is stale.
+set -u
+fix_cmd() {
+  case "$1" in
+    gcloud) echo "gcloud auth login" ;;
+    # pinned firebase from nixpkgs, never npx; the login lives in ~/.config/configstore
+    firebase) if command -v firebase >/dev/null; then echo "firebase login --reauth"
+              else echo "nix shell nixpkgs#firebase-tools -c firebase login --reauth"; fi ;;
+    *) return 1 ;;
+  esac
+}
+if [[ ${1:-} == --fix-cmd ]]; then fix_cmd "${2:?which login?}"; exit; fi
+
+check() {   # check NAME -> prints "ok"/"stale"/"missing" and a detail; returns 0 if ok
+  local out
+  case "$1" in
+    gcloud)
+      command -v gcloud >/dev/null || { echo "missing  gcloud not installed"; return 1; }
+      if out=$(CLOUDSDK_CORE_DISABLE_PROMPTS=1 timeout 25 gcloud auth print-access-token --quiet 2>&1 >/dev/null); then
+        echo "ok       $(gcloud config get-value account 2>/dev/null)"
+      else echo "stale    $(printf '%s' "$out" | grep -m1 -iE 'reauth|login|error' | cut -c1-90)"; return 1; fi ;;
+    firebase)
+      local fb=(firebase); command -v firebase >/dev/null || fb=(nix shell nixpkgs#firebase-tools -c firebase)
+      if out=$(timeout 40 "${fb[@]}" projects:list --json --non-interactive 2>&1) && grep -q '"status": "success"' <<<"$out"; then
+        echo "ok       $("${fb[@]}" login:list 2>/dev/null | grep -m1 -oE '[^ ]+@[^ ]+' || echo signed in)"
+      else echo "stale    $(printf '%s' "$out" | grep -m1 -iE 'reauth|login|auth|error' | cut -c1-90)"; return 1; fi ;;
+    *) echo "unknown  (gcloud or firebase)"; return 1 ;;
+  esac
+}
+
+names=("$@"); (( ${#names[@]} )) || names=(gcloud firebase)
+bad=0
+for n in "${names[@]}"; do
+  line=$(check "$n") || bad=1
+  printf '%-9s %s\n' "$n" "$line"
+  [[ $line == ok* ]] || printf '          log in: %s\n' "$(fix_cmd "$n")"
+done
+exit $bad
