@@ -349,6 +349,8 @@ hl.device({
 -- Super+F binds work without Fn. Details in keychron-k2-pro.xkb. It shows up as four
 -- devices over USB and three over Bluetooth; media keys come from a separate device,
 -- so all of them get the same keymap.
+-- The Keychron Q11 Ultra 8K (3434:12b0, also Mac mode, US) shares the keymap; these are
+-- its Bluetooth names. Its USB names are unseen yet: check `hyprctl devices` when wired.
 for _, dev in ipairs({
     "keychron-keychron-k2-pro",
     "keychron-keychron-k2-pro-keyboard",
@@ -357,6 +359,9 @@ for _, dev in ipairs({
     "keychron-k2-pro-keyboard",
     "keychron-k2-pro-keyboard-1",
     "keychron-k2-pro-mouse",
+    "keychron-q11-ultra-8k-l-keyboard",
+    "keychron-q11-ultra-8k-l-keyboard-1",
+    "keychron-q11-ultra-8k-l-mouse",
 }) do
     hl.device({
         name    = dev,
