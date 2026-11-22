@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# walls: fill ~/Pictures/walls/lofi for wpaperd. Safe to run again: it only adds what's missing.
+#   1. Shallow-clones (or updates) the source collection into ~/Pictures/walls-sources.
+#   2. Copies the files listed in ~/dotfiles/wpaperd/lofi.txt.
+#   3. Adds Hyprland's own wall2 (the girl on the subway with the ghost cats).
+# Remove a picture you tire of from lofi.txt and from the folder; wpaperd notices on its own.
+set -euo pipefail
+src=~/Pictures/walls-sources/Losterixx-wallpapers
+dst=~/Pictures/walls/lofi
+list=~/dotfiles/wpaperd/lofi.txt
+mkdir -p "$dst" ~/Pictures/walls-sources
+if [ -d "$src/.git" ]; then
+  git -C "$src" pull -q --ff-only || echo "walls: couldn't update $src; using what's there"
+else
+  timeout 600 git clone -q --depth 1 https://codeberg.org/Losterixx/wallpapers "$src"
+fi
+grep -v '^\s*\(#\|$\)' "$list" | while read -r f; do
+  if [ ! -e "$dst/$f" ]; then
+    if [ -e "$src/$f" ]; then cp "$src/$f" "$dst/$f"; echo "added $f"
+    else echo "walls: $f is no longer in the collection" >&2; fi
+  fi
+done
+hypr=$(dirname "$(readlink -f "$(command -v Hyprland)")")/../share/hypr/wall2.png
+if [ ! -e "$dst/subway-ghost-cats.png" ] && [ -e "$hypr" ]; then
+  install -m 644 "$hypr" "$dst/subway-ghost-cats.png"; echo "added subway-ghost-cats.png"
+fi
+echo "$(ls "$dst" | wc -l) wallpapers in $dst"

@@ -1,0 +1,24 @@
+# Anime / lofi night: picks from codeberg.org/Losterixx/wallpapers (2026-11-22).
+# That collection's owner credits no artists and doesn't own the images; personal desktop only.
+# One file name per line; ~/dotfiles/bin/walls copies these into ~/Pictures/walls/lofi.
+1268195.png
+anime-night-sky-illustration2.jpg
+City-Rain.png
+Fantasy-IcyMountain.png
+Fantasy-Japanese-Street.png
+Fantasy-Lanscape-Night.png
+Lofi-Room.png
+Lowpoly_Street.png
+Manga-Girl-Rain.png
+Night_City.png
+Pastel-Window.png
+Street-2.png
+Sunset-room.png
+Tokyo_Pink.png
+wallhaven-3k9mo9.png
+wallhaven-d6y12l.jpg
+wallhaven-je8vlm-colorized.png
+wallhaven-ly87kp.png
+wallhaven-qr9jml.jpg
+wallhaven-wq59xx.jpg
+wallhaven-x6128o.jpg

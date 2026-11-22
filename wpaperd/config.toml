@@ -1,0 +1,12 @@
+# wpaperd: rotates the wallpaper through a folder. Fill the folder with ~/dotfiles/bin/walls.
+#   Super+W next, Super+Shift+W previous (wpaperctl next / previous).
+# A still image changed every 30 minutes costs next to nothing on battery.
+
+[default]
+duration        = "30m"
+sorting         = "random"
+mode            = "center"     # fill the screen, trim the edges rather than letterbox
+transition-time = 1500         # ms of cross-fade
+
+[any]
+path = "/home/amj/Pictures/walls/lofi"

@@ -28,9 +28,10 @@ Each folder belongs in `~/.config/` (`emacs/init.el` goes in `~/.emacs.d/`). I k
 repo in `~/dotfiles` and symlink:
 
 ```sh
-for d in hypr quickshell kitty tofi yazi mako fcitx5; do ln -s ~/dotfiles/$d ~/.config/$d; done
+for d in hypr quickshell kitty tofi yazi mako fcitx5 wpaperd; do ln -s ~/dotfiles/$d ~/.config/$d; done
 ln -s ~/dotfiles/emacs/init.el ~/.emacs.d/init.el
 ln -s ~/dotfiles/just/justfile ~/justfile
+~/dotfiles/bin/walls    # fills ~/Pictures/walls/lofi for wpaperd
 ```
 
 Some settings are specific to this machine: the home city's coordinates in

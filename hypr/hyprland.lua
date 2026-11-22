@@ -123,6 +123,7 @@ local menu        = os.getenv("HOME") .. "/.config/tofi/launch.sh"  -- tofi, Sol
 
 hl.on("hyprland.start", function ()
   hl.exec_cmd("quickshell")  -- top bar, loads ~/.config/quickshell/shell.qml
+  hl.exec_cmd("wpaperd -d")  -- wallpaper: anime/lofi night, a new one every 30 min (~/.config/wpaperd)
   hl.exec_cmd("~/dotfiles/bin/auto-brightness")  -- screen follows the light sensor (Super+F8 toggles)
   hl.exec_cmd("~/dotfiles/bin/privacy-notify")   -- notify when the mic privacy switch moves
 end)
@@ -293,7 +294,7 @@ hl.config({
 
 hl.config({
     misc = {
-        force_default_wallpaper = 2,     -- wall2, the girl on the subway with the ghost cats (-1 = random of 0/1/2; 1 is the triangles)
+        force_default_wallpaper = 2,     -- under wpaperd: wall2, the girl on the subway with the ghost cats (-1 = random of 0/1/2; 1 is the triangles)
         disable_hyprland_logo   = false, -- If true disables the random hyprland logo / anime girl background. :(
     },
 })
@@ -419,6 +420,8 @@ hl.bind(mainMod .. " + O", hl.dsp.exec_cmd("qs ipc call open toggle"), { descrip
 -- Super+A: old-time radio (bin/otr): a tofi menu of shows, then a random episode streamed
 -- from the Internet Archive; `just stop` (or picking another) stops it.
 hl.bind(mainMod .. " + A", hl.dsp.exec_cmd("~/dotfiles/bin/otr"), { description = "Apps: Old-time radio: pick a show, hear a random episode" })
+hl.bind(mainMod .. " + W", hl.dsp.exec_cmd("wpaperctl next"), { description = "Ours: Next wallpaper" })
+hl.bind(mainMod .. " + SHIFT + W", hl.dsp.exec_cmd("wpaperctl previous"), { description = "Ours: Previous wallpaper" })
 
 -- Alt+C / Alt+V copy and paste in any window (Chromebook/Mac habit). Terminals use
 -- Ctrl+Shift+C/V for copy/paste, since Ctrl+C there means "interrupt".
