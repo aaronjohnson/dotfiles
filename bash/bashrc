@@ -4,6 +4,9 @@
 # Personal commands (hud, usbc-power, …).
 PATH="$HOME/dotfiles/bin:$PATH"
 
+# macOS habit: open a file or URL with its default app (links go on to open-url).
+alias open=xdg-open
+
 # On the Linux text console, borrow the clipboard of the running Hyprland session.
 # The console has no clipboard of its own and can't tell Ctrl+Shift+V from Ctrl+V.
 if [[ $TERM == linux ]]; then
