@@ -203,10 +203,13 @@ hl.config({
             color        = 0xee1a1a1a,
         },
 
+        -- Frosted glass behind see-through windows (kitty's background_opacity): the
+        -- wallpaper turns to soft colour, so text over it stays easy to read.
         blur = {
             enabled   = true,
-            size      = 3,
-            passes    = 1,
+            size      = 7,
+            passes    = 2,
+            noise     = 0.02,   -- a little grain, so the frost reads as glass
             vibrancy  = 0.1696,
             special   = true,   -- blur behind special workspaces (costs GPU only while one is shown)
         },
@@ -290,7 +293,7 @@ hl.config({
 
 hl.config({
     misc = {
-        force_default_wallpaper = -1,    -- Set to 0 or 1 to disable the anime mascot wallpapers
+        force_default_wallpaper = 2,     -- wall2, the girl on the subway with the ghost cats (-1 = random of 0/1/2; 1 is the triangles)
         disable_hyprland_logo   = false, -- If true disables the random hyprland logo / anime girl background. :(
     },
 })
