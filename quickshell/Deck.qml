@@ -446,7 +446,7 @@ Scope {
                 width: parent.width - (win.narrow ? 40 : 100)
                 height: parent.height - (win.narrow ? 40 : 100)
                 radius: 10
-                color: Qt.alpha(deck.theme.surface, 0.42)     // glass: see the desktop while thinking
+                color: Qt.alpha(deck.theme.surface, 0.28)     // glass: see the desktop while thinking
                 border.width: 1
                 border.color: Qt.alpha(deck.theme.dim, 0.6)
                 opacity: 0
@@ -745,7 +745,7 @@ Scope {
                     height: visible ? qCol.implicitHeight + 28 : 0
                     visible: true      // it holds the question, so it's always there
                     radius: 10
-                    color: Qt.alpha(deck.theme.bg, 0.72)     // the one dense surface: it's what you read
+                    color: Qt.alpha(deck.theme.bg, 0.48)     // the densest surface, still glass: it is what you read
                     border.width: deck.auto || deck.busyRepo !== "" ? 2 : 1
                     border.color: deck.auto || deck.nextStep || deck.busyRepo !== "" ? deck.theme.violet : deck.theme.muted
 
@@ -924,7 +924,7 @@ Scope {
                     anchors { bottom: parent.bottom; left: leftSide.right; right: rightSide.left; margins: 16; bottomMargin: 22 }
                     visible: !win.narrow
                     radius: 8
-                    color: Qt.alpha(deck.theme.bg, 0.30)
+                    color: Qt.alpha(deck.theme.bg, 0.20)
                     height: win.narrow ? 0 : (panel.height - rule.y) * 0.22
 
                     Text {
@@ -1012,7 +1012,7 @@ Scope {
                                     height: Math.max(tilesArea.tileH, tileCol.implicitHeight + 24)
                                     clip: true
                                     radius: 8
-                                    color: r.active ? Qt.alpha(deck.theme.bg, 0.38) : "transparent"
+                                    color: r.active ? Qt.alpha(deck.theme.bg, 0.26) : "transparent"
                                     // the tile the NEXT question is about
                                     readonly property bool isNext: !!deck.nextStep && deck.nextStep.repo === r.path
                                     border.width: busy || isNext ? 2 : 1
