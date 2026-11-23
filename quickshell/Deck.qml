@@ -95,7 +95,13 @@ Scope {
     }
     function refresh() { loading = true; statusProc.running = true; }
     function checkSwitch() { switchState = "checking"; switchProc.running = true; }
-    function show() { open = true; skipped = ({}); done = []; auto = false; refresh(); checkSwitch(); readCalendar(false); }
+    // suchi opens on its own empty special workspace: the windows behind go dim and
+    // blurred (dim_special, blur.special), the wallpaper stays, and Esc brings them back
+    property bool ownSpecial: false
+    function show() {
+        if (!ownSpecial) { Hyprland.dispatch("hl.dsp.workspace.toggle_special(\"suchi\")"); ownSpecial = true; }
+        open = true; skipped = ({}); done = []; auto = false; refresh(); checkSwitch(); readCalendar(false);
+    }
 
     // ---- the clock tab: local time and the next calendar event ----
     // bin/next-event writes the cache; the tab shows what's there at once and updates when
@@ -233,7 +239,10 @@ Scope {
         if (!nextStep) return;
         const s = Object.assign({}, skipped); s[nextStep.key] = true; skipped = s;
     }
-    function hide() { open = false; auto = false; }   // a step already running finishes
+    function hide() {   // a step already running finishes
+        open = false; auto = false;
+        if (ownSpecial) { Hyprland.dispatch("hl.dsp.workspace.toggle_special(\"suchi\")"); ownSpecial = false; }
+    }
 
     // ---- A: run the queue to the end ----
     // After each step the repos are re-read (and the switch re-checked), so the plan grows
@@ -422,7 +431,7 @@ Scope {
                 anchors.fill: parent
                 color: deck.theme.bg
                 opacity: 0
-                Component.onCompleted: opacity = 0.6
+                Component.onCompleted: opacity = 0.18     // a tint: the desktop stays in view
                 Behavior on opacity { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
                 MouseArea { anchors.fill: parent; onClicked: deck.hide() }
             }
@@ -433,9 +442,9 @@ Scope {
                 width: parent.width - (win.narrow ? 40 : 100)
                 height: parent.height - (win.narrow ? 40 : 100)
                 radius: 10
-                color: deck.theme.surface
+                color: Qt.alpha(deck.theme.surface, 0.42)     // glass: see the desktop while thinking
                 border.width: 1
-                border.color: deck.theme.dim
+                border.color: Qt.alpha(deck.theme.dim, 0.6)
                 opacity: 0
                 scale: 0.98
                 Component.onCompleted: { opacity = 1; scale = 1; forceActiveFocus(); }
@@ -712,8 +721,8 @@ Scope {
                 }
                 SideColumn {
                     id: rightSide
-                    anchors { top: rule.bottom; bottom: onDeck.visible ? onDeck.top : parent.bottom; right: parent.right
-                              margins: 16; bottomMargin: onDeck.visible ? 12 : 22 }
+                    anchors { top: rule.bottom; bottom: parent.bottom; right: parent.right
+                              margins: 16; bottomMargin: 22 }
                     width: win.narrow ? 0 : panel.width * 0.22
                     visible: !win.narrow
                     clip: true
@@ -721,20 +730,20 @@ Scope {
                     rowsHere: win.narrow ? 0 : deck.sides.rightRows
                 }
 
-                // ---- ON DECK: the queue as a table, lower right ----
+                // ---- ON DECK: the queue as a table, centred at the top: the focus ----
                 // Done rows (✓/✗ and their last line), the one running (live output) or
                 // next, then the rest in order. A walks down it.
                 Rectangle {
                     id: onDeck
-                    anchors { right: parent.right; bottom: parent.bottom; margins: 16; bottomMargin: 22 }
-                    width: panel.width * 0.22
-                    height: visible ? qCol.implicitHeight + 20 : 0
+                    anchors { top: rule.bottom; topMargin: 18; horizontalCenter: parent.horizontalCenter }
+                    // the middle, between the side columns (narrow: between the column and the edge)
+                    width: Math.min(820, (win.narrow ? panel.width - leftSide.width - 64 : panel.width * 0.56 - 32))
+                    height: visible ? qCol.implicitHeight + 28 : 0
                     visible: true      // it holds the question, so it's always there
-                    radius: 8
-                    color: deck.theme.bg
-                    opacity: 0.92
-                    border.width: 1
-                    border.color: deck.auto ? deck.theme.violet : deck.theme.muted
+                    radius: 10
+                    color: Qt.alpha(deck.theme.bg, 0.72)     // the one dense surface: it's what you read
+                    border.width: deck.auto || deck.busyRepo !== "" ? 2 : 1
+                    border.color: deck.auto || deck.nextStep || deck.busyRepo !== "" ? deck.theme.violet : deck.theme.muted
 
                     // the log (past), then the queue: the step running or next, and the rest
                     readonly property var rows: deck.log.map((e, i) => {
@@ -755,8 +764,8 @@ Scope {
 
                     Column {
                         id: qCol
-                        anchors { top: parent.top; left: parent.left; right: parent.right; margins: 10 }
-                        spacing: 3
+                        anchors { top: parent.top; left: parent.left; right: parent.right; margins: 14 }
+                        spacing: 4
                         Row {
                             spacing: 8
                             Text {
@@ -774,14 +783,14 @@ Scope {
                             }
                         }
                         Repeater {
-                            model: onDeck.rows.slice(-18)     // the newest 18: what's next stays in view
+                            model: onDeck.rows.slice(-12)     // the newest 12: what's next stays in view, tiles keep room
                             Row {
                                 required property var modelData
                                 readonly property color tone: modelData.state === "ok" ? deck.theme.green
                                     : modelData.state === "bad" ? deck.theme.red
                                     : modelData.state === "later" || modelData.state === "info" || modelData.state === "fixed" ? deck.theme.muted : deck.theme.violet
                                 width: qCol.width
-                                height: Math.max(17, detailText.implicitHeight)   // a failure wraps to show its reason
+                                height: Math.max(19, detailText.implicitHeight)   // a failure wraps to show its reason
                                 spacing: 6
                                 Rectangle {     // a bar marks the row A is on
                                     width: 3; height: parent.height
@@ -800,28 +809,28 @@ Scope {
                                     font.pixelSize: 12; font.bold: true
                                 }
                                 Text {
-                                    width: 78
+                                    width: 96
                                     text: modelData.label
                                     color: parent.tone
-                                    font.pixelSize: 11; font.bold: modelData.state !== "later"
+                                    font.pixelSize: 12; font.bold: modelData.state !== "later"
                                     elide: Text.ElideRight
                                 }
                                 Text {
-                                    width: 88
+                                    width: 110
                                     text: onDeck.repoName(modelData.repo)
                                     color: modelData.state === "later" ? deck.theme.muted : deck.theme.cyan
-                                    font.pixelSize: 11
+                                    font.pixelSize: 12
                                     elide: Text.ElideRight
                                 }
                                 Text {
                                     id: detailText
-                                    width: parent.width - 3 - 32 - 14 - 78 - 88 - 5 * 6
+                                    width: parent.width - 3 - 32 - 14 - 96 - 110 - 5 * 6
                                     wrapMode: modelData.state === "bad" ? Text.Wrap : Text.NoWrap
                                     maximumLineCount: modelData.state === "bad" ? 3 : 1
                                     text: modelData.detail || ""
                                     color: modelData.state === "bad" ? deck.theme.red
                                          : modelData.state === "later" ? deck.theme.muted : deck.theme.dim
-                                    font.pixelSize: 11
+                                    font.pixelSize: 12
                                     font.family: modelData.state === "running" ? "monospace" : Qt.application.font.family
                                     elide: Text.ElideRight
                                 }
@@ -847,7 +856,7 @@ Scope {
                                     : deck.verdict.headline || "Nothing left to land or ship"
                                 color: deck.needsLogin ? deck.theme.red
                                      : deck.nextStep || deck.busyRepo !== "" ? deck.theme.violet : deck.theme.green
-                                font.pixelSize: 14; font.bold: true
+                                font.pixelSize: 18; font.bold: true
                                 wrapMode: Text.Wrap
                             }
                             Column {
@@ -909,11 +918,10 @@ Scope {
                 Rectangle {
                     id: timeline
                     anchors { bottom: parent.bottom; left: leftSide.right; right: rightSide.left; margins: 16; bottomMargin: 22 }
-                    height: win.narrow ? 0 : (panel.height - rule.y) * 0.34
                     visible: !win.narrow
                     radius: 8
-                    color: deck.theme.bg
-                    opacity: 0.92
+                    color: Qt.alpha(deck.theme.bg, 0.30)
+                    height: win.narrow ? 0 : (panel.height - rule.y) * 0.22
 
                     Text {
                         id: tlHead
@@ -951,11 +959,11 @@ Scope {
                     }
                 }
 
-                // ---- hot tiles: the middle, above the timeline ----
+                // ---- hot tiles: the middle, under the queue, above the timeline ----
                 Item {
                     id: tilesArea
-                    anchors { top: rule.bottom; bottom: win.narrow ? parent.bottom : timeline.top; left: leftSide.right
-                              right: win.narrow ? onDeck.left : rightSide.left; margins: 16; bottomMargin: win.narrow ? 22 : 12 }
+                    anchors { top: onDeck.bottom; topMargin: 14; bottom: win.narrow ? parent.bottom : timeline.top; left: leftSide.right
+                              right: win.narrow ? parent.right : rightSide.left; margins: 16; bottomMargin: win.narrow ? 22 : 12 }
                     // columns: as many as fit at >= 330 px, but the count that leaves the
                     // fewest empty cells in the last row (10 tiles: 5 x 2, not 4 + 4 + 2)
                     readonly property int cols: {
@@ -1000,14 +1008,14 @@ Scope {
                                     height: Math.max(tilesArea.tileH, tileCol.implicitHeight + 24)
                                     clip: true
                                     radius: 8
-                                    color: r.active ? deck.theme.bg : "transparent"
+                                    color: r.active ? Qt.alpha(deck.theme.bg, 0.38) : "transparent"
                                     // the tile the NEXT question is about
                                     readonly property bool isNext: !!deck.nextStep && deck.nextStep.repo === r.path
                                     border.width: busy || isNext ? 2 : 1
                                     border.color: busy || isNext ? deck.theme.violet
                                         : r.draft ? deck.theme.yellow
                                         : r.active ? deck.theme.dim : deck.theme.muted
-                                    opacity: r.active || busy ? 1 : 0.75
+                                    opacity: r.active || busy || isNext ? 1 : 0.6     // the queue's tile stays bright
 
                                     Column {
                                         id: tileCol
