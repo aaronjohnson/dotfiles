@@ -468,6 +468,7 @@ Scope {
                         if (deck.needsLogin) deck.logIn(); else deck.all();
                     }
                     else if (event.key === Qt.Key_N || event.key === Qt.Key_Space) deck.no();
+                    else if (event.key === Qt.Key_L) onDeck.unfold();
                     else if (event.key === Qt.Key_R) { deck.refresh(); deck.checkSwitch(); deck.readCalendar(true); }
                     else return;
                     event.accepted = true;
@@ -478,7 +479,7 @@ Scope {
                     theme: deck.theme
                     title: "Land · Ship"
                     detail: "Super+F12"
-                    hint: "Y run next · N skip · A or Enter all, then status · or click a chip · R refresh · Esc close · terminal: Super+Shift+F12"
+                    hint: "Y run next · N skip · A or Enter all, then status · or click a chip · L log · R refresh · Esc close · terminal: Super+Shift+F12"
                 }
 
                 // ---- system strip ----
@@ -742,8 +743,23 @@ Scope {
                     anchors { top: rule.bottom; topMargin: 18; horizontalCenter: parent.horizontalCenter }
                     // the middle, between the side columns (narrow: between the column and the edge)
                     width: Math.min(820, (win.narrow ? panel.width - leftSide.width - 64 : panel.width * 0.56 - 32))
-                    height: visible ? qCol.implicitHeight + 28 : 0
-                    visible: true      // it holds the question, so it's always there
+                    // after a moment at rest it folds away: only the question stays while a step
+                    // waits, nothing at all when nothing's left, leaving the projects. Any step
+                    // running, new work, a login, or L brings the log back.
+                    property bool folded: false
+                    readonly property bool gone: folded && !deck.nextStep && !deck.needsLogin && deck.idle
+                    readonly property string stir: [deck.busyRepo, deck.pending.length, JSON.stringify(deck.log[deck.log.length - 1] || {}),   // the log is capped, so its length stops moving
+                                                    deck.needsLogin, deck.loading, deck.auto].join("|")
+                    onStirChanged: { folded = false; foldTimer.restart(); }
+                    Component.onCompleted: foldTimer.restart()
+                    Timer { id: foldTimer; interval: 3000; onTriggered: if (deck.idle && !deck.auto) onDeck.folded = true }
+                    function unfold() { folded = !folded; if (!folded) foldTimer.restart(); }
+                    height: gone ? 0 : qCol.implicitHeight + 28
+                    opacity: gone ? 0 : 1
+                    visible: opacity > 0
+                    clip: true
+                    Behavior on height { NumberAnimation { duration: 260; easing.type: Easing.OutCubic } }
+                    Behavior on opacity { NumberAnimation { duration: 220 } }
                     radius: 10
                     color: Qt.alpha(deck.theme.bg, 0.48)     // the densest surface, still glass: it is what you read
                     border.width: deck.auto || deck.busyRepo !== "" ? 2 : 1
@@ -787,7 +803,7 @@ Scope {
                             }
                         }
                         Repeater {
-                            model: onDeck.rows.slice(-12)     // the newest 12: what's next stays in view, tiles keep room
+                            model: onDeck.folded ? [] : onDeck.rows.slice(-12)     // the newest 12: what's next stays in view, tiles keep room
                             Row {
                                 required property var modelData
                                 readonly property color tone: modelData.state === "ok" ? deck.theme.green
