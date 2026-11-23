@@ -2867,6 +2867,36 @@ ShellRoot {
                     font.bold: true
                   }
 
+                  // The three looks side by side, the current one lit: ☀ Solarized
+                  // Light, ☾ Solarized Dark, ◌ Glass. Click one to switch.
+                  Row {
+                    id: modePicker
+                    visible: cityItem.modelData.home === true
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 4
+                    Repeater {
+                      model: [
+                        { mode: "light", glyph: "☀", tip: "Solarized Light" },
+                        { mode: "dark",  glyph: "☾", tip: "Solarized Dark" },
+                        { mode: "glass", glyph: "◌", tip: "Glass: see-through, blurred" }
+                      ]
+                      Text {
+                        required property var modelData
+                        readonly property bool current: root.themeMode === modelData.mode
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: modelData.glyph
+                        color: current ? root.c.cyan : modeHover.hovered ? root.c.dim : root.c.muted
+                        font.pixelSize: 12
+                        font.bold: current
+                        HoverHandler { id: modeHover }
+                        TapHandler {
+                          onTapped: modelData.mode === "glass" ? root.setGlass()
+                                                               : root.setTheme(modelData.mode === "light")
+                        }
+                      }
+                    }
+                  }
+
                   Canvas {
 
                     property var themeColors: root.c
@@ -2985,36 +3015,6 @@ ShellRoot {
                     onTapped: (eventPoint) => {
                       var p = modePicker.mapFromItem(cityItem, eventPoint.position);
                       if (!modePicker.contains(p)) root.setTheme(!root.lightMode);
-                    }
-                  }
-
-                  // The three looks side by side, the current one lit: ☀ Solarized
-                  // Light, ☾ Solarized Dark, ◌ Glass. Click one to switch.
-                  Row {
-                    id: modePicker
-                    visible: cityItem.modelData.home === true
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: 4
-                    Repeater {
-                      model: [
-                        { mode: "light", glyph: "☀", tip: "Solarized Light" },
-                        { mode: "dark",  glyph: "☾", tip: "Solarized Dark" },
-                        { mode: "glass", glyph: "◌", tip: "Glass: see-through, blurred" }
-                      ]
-                      Text {
-                        required property var modelData
-                        readonly property bool current: root.themeMode === modelData.mode
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: modelData.glyph
-                        color: current ? root.c.cyan : modeHover.hovered ? root.c.dim : root.c.muted
-                        font.pixelSize: 12
-                        font.bold: current
-                        HoverHandler { id: modeHover }
-                        TapHandler {
-                          onTapped: modelData.mode === "glass" ? root.setGlass()
-                                                               : root.setTheme(modelData.mode === "light")
-                        }
-                      }
                     }
                   }
 

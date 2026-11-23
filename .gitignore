@@ -8,3 +8,5 @@
 fcitx5/conf/cached_layouts
 
 __pycache__/
+kitty/glass-state.conf
+kitty/glass-colors.conf

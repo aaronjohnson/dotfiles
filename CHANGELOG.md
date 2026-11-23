@@ -12,7 +12,8 @@ that was already there tastes better, a blend adjusted when the balance shifts.
   (or `qs ipc call theme glass`). Glass is Solarized Dark with the background let
   go: the bar and tofi turn mostly clear and Hyprland blurs what's behind them,
   kitty drops to 0.6 opacity, and the text goes a step brighter so it holds over
-  the wallpaper. Sunrise and sunset leave Glass alone; ☀ or ☾ ends it.
+  the wallpaper: in kitty the body grey and the dim greys rise a step, and faint
+  text is less faint. Sunrise and sunset leave Glass alone; ☀ or ☾ ends it.
 - **Blur only when it's wanted.** The blur behind the bar and tofi is a layer rule
   that stays off in the solid looks. `bin/theme-glass` switches it, deepens the
   frost a little, and reaches running kitty windows over a socket each one now opens.

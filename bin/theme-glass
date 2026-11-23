@@ -3,7 +3,9 @@
 # The bar calls this every time the theme changes; it's safe to run again and again.
 #
 #   kitty    open windows go to 0.6 opacity (back to kitty.conf's 0.88 when off);
-#            new windows read ~/.local/state/theme/kitty.conf through globinclude
+#            new windows read ~/.config/kitty/glass-state.conf (gitignored) through
+#            globinclude, which only looks inside kitty's config folder; greys a
+#            step brighter through glass-colors.conf, included by dark-theme.auto.conf
 #   Hyprland blurs behind the bar and tofi (layer rule GlassLayers in hyprland.lua)
 #            and frosts a little deeper while glass is on
 #   tofi     tofi/launch.sh reads ~/.local/state/theme/mode and picks solarized-glass.conf
@@ -18,16 +20,38 @@ case "$1" in
   *)   echo "usage: theme-glass on|off" >&2; exit 2 ;;
 esac
 
+kdir="$HOME/.config/kitty"
 echo "$mode" > "$state/mode"
 if [ "$mode" = glass ]; then
-  echo "background_opacity $opacity" > "$state/kitty.conf"
+  # New windows: see-through, and SGR-dim text less faint (kitty's default is 0.4).
+  printf 'background_opacity %s\ndim_opacity 0.6\n' "$opacity" > "$kdir/glass-state.conf"
+  # Greys a step brighter so they hold over the wallpaper: body text, and the two
+  # dim Solarized greys (color10/11) that prompts and status lines use.
+  cat > "$kdir/glass-colors.conf" <<'COLOURS'
+foreground #a3b1b1
+cursor     #eee8d5
+color10    #839496
+color11    #93a1a1
+color12    #a3b1b1
+COLOURS
 else
-  : > "$state/kitty.conf"
+  rm -f "$kdir/glass-state.conf"
+  : > "$kdir/glass-colors.conf"
 fi
+rm -f "$state/kitty.conf"   # where an earlier version kept it
+# kitty caches theme files by mtime; touch so the next re-read picks up the new greys.
+touch "$kdir/dark-theme.auto.conf"
+
+# The bar has already set color-scheme, so this names the theme kitty should be in.
+case "$(gsettings get org.gnome.desktop.interface color-scheme 2>/dev/null)" in
+  *light*) theme="$kdir/light-theme.auto.conf" ;;
+  *)       theme="$kdir/dark-theme.auto.conf" ;;
+esac
 
 # Every running kitty listens on an abstract socket @kitty-PID (kitty.conf listen_on).
 grep -o '@kitty-[0-9]*' /proc/net/unix 2>/dev/null | sort -u | while read -r sock; do
   kitty @ --to "unix:$sock" set-background-opacity --all "$opacity" >/dev/null 2>&1
+  kitty @ --to "unix:$sock" set-colors --all --configured "$theme" >/dev/null 2>&1
 done
 
 if command -v hyprctl >/dev/null 2>&1; then
