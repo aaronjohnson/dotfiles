@@ -95,11 +95,15 @@ Scope {
     }
     function refresh() { loading = true; statusProc.running = true; }
     function checkSwitch() { switchState = "checking"; switchProc.running = true; }
-    // suchi opens on its own empty special workspace: the windows behind go dim and
-    // blurred (dim_special, blur.special), the wallpaper stays, and Esc brings them back
-    property bool ownSpecial: false
+    // suchi opens on an empty workspace: nothing behind the glass but the wallpaper.
+    // Esc goes back to the workspace it was opened from.
+    property int returnTo: 0
     function show() {
-        if (!ownSpecial) { Hyprland.dispatch("hl.dsp.workspace.toggle_special(\"suchi\")"); ownSpecial = true; }
+        if (!open) {
+            const ws = Hyprland.focusedMonitor ? Hyprland.focusedMonitor.activeWorkspace : null;
+            returnTo = ws ? ws.id : 0;
+            Hyprland.dispatch("hl.dsp.focus({workspace = \"empty\"})");
+        }
         open = true; skipped = ({}); done = []; auto = false; refresh(); checkSwitch(); readCalendar(false);
     }
 
@@ -241,7 +245,7 @@ Scope {
     }
     function hide() {   // a step already running finishes
         open = false; auto = false;
-        if (ownSpecial) { Hyprland.dispatch("hl.dsp.workspace.toggle_special(\"suchi\")"); ownSpecial = false; }
+        if (returnTo > 0) { Hyprland.dispatch("hl.dsp.focus({workspace = " + returnTo + "})"); returnTo = 0; }
     }
 
     // ---- A: run the queue to the end ----
