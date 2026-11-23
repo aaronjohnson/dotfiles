@@ -77,8 +77,20 @@ ShellRoot {
         yellow: "#b58900", orange: "#cb4b16", red: "#dc322f", violet: "#6c71c4",
         blue: "#268bd2", cyan: "#2aa198", green: "#859900"
     })
+    // Glass: Solarized Dark with the background let go. The bar, kitty and tofi turn
+    // see-through and Hyprland blurs what's behind them, so the wallpaper shines
+    // through as soft colour while the text stays solid. Text is a step brighter so it
+    // holds up over whatever shows through.
+    readonly property var solarizedGlass: ({
+        bg: "#002b36", surface: "#073642", muted: "#839496", dim: "#93a1a1",
+        fg: "#eee8d5", night: "#268bd2", moonLit: "#fdf6e3",
+        yellow: "#b58900", orange: "#cb4b16", red: "#dc322f", violet: "#6c71c4",
+        blue: "#268bd2", cyan: "#2aa198", green: "#859900"
+    })
     property bool lightMode: false
-    readonly property var c: lightMode ? solarizedLight : solarizedDark
+    property bool glassMode: false
+    readonly property string themeMode: glassMode ? "glass" : lightMode ? "light" : "dark"
+    readonly property var c: glassMode ? solarizedGlass : lightMode ? solarizedLight : solarizedDark
 
     // "#rrggbb" plus opacity -> "rgba(r, g, b, a)", for the canvas drawings.
     function alpha(hex, a) {
@@ -93,32 +105,52 @@ ShellRoot {
     property bool skyGloomy: false
     property string skyWhy: ""
     readonly property bool homeLight: homeIsDay && !skyGloomy
-    onHomeLightChanged: setTheme(homeLight)
+    // Glass is a mood, so sunrise and sunset leave it alone; picking ☀ or ☾ ends it.
+    onHomeLightChanged: if (!glassMode) setTheme(homeLight)
     Component.onCompleted: setTheme(homeLight)
 
-    // `qs ipc call theme dark|light|sun`: override by hand (a grey day wants dark);
-    // the next sunrise or sunset takes over again.
+    // `qs ipc call theme dark|light|glass|sun`: override by hand (a grey day wants
+    // dark); the next sunrise or sunset takes over again, except from glass.
     IpcHandler {
         target: "theme"
         function dark(): void { root.setTheme(false); }
         function light(): void { root.setTheme(true); }
+        function glass(): void { root.setGlass(); }
         function sun(): void { root.setTheme(root.homeLight); }
     }
 
     function setTheme(light) {
+        glassMode = false;
         lightMode = light;
+        schemeSetter.running = false;
+        schemeSetter.running = true;
+    }
+
+    function setGlass() {
+        lightMode = false;
+        glassMode = true;
         schemeSetter.running = false;
         schemeSetter.running = true;
     }
 
     // color-scheme is what kitty, libadwaita/GTK4 apps and the desktop portal
     // read; gtk-theme covers older GTK3 apps; makoctl recolours notifications.
+    // Glass reports dark to all of them; bin/theme-glass does the see-through part
+    // (kitty opacity, Hyprland blur behind the bar and tofi, the mode tofi reads).
     Process {
         id: schemeSetter
         command: ["sh", "-c",
                   "gsettings set org.gnome.desktop.interface color-scheme " + (root.lightMode ? "prefer-light" : "prefer-dark")
                   + "; gsettings set org.gnome.desktop.interface gtk-theme " + (root.lightMode ? "Adwaita" : "Adwaita-dark")
-                  + "; makoctl mode -s " + (root.lightMode ? "light" : "dark") + " 2>/dev/null"]
+                  + "; makoctl mode -s " + (root.lightMode ? "light" : "dark") + " 2>/dev/null"
+                  + "; \"$HOME/dotfiles/bin/theme-glass\" " + (root.glassMode ? "on" : "off")]
+    }
+
+    // "#rrggbb" plus opacity -> "#aarrggbb", for QML colours that should let the
+    // wallpaper through without fading what's drawn on top.
+    function seeThrough(hex, a) {
+        var h = Math.round(a * 255).toString(16);
+        return "#" + (h.length < 2 ? "0" + h : h) + hex.substr(1);
     }
 
 
@@ -1574,10 +1606,12 @@ ShellRoot {
             onTriggered: screenScope.revealed = false
           }
 
+          // Light and dark fade the whole bar a touch; glass instead thins only the
+          // background (Hyprland blurs behind it) and keeps the text fully solid.
           Rectangle {
             anchors.fill: parent
-            color: root.c.bg
-            opacity: 0.85
+            color: root.glassMode ? root.seeThrough(root.c.bg, 0.35) : root.c.bg
+            opacity: root.glassMode ? 1.0 : 0.85
 
             HoverHandler { id: barHover }
 
@@ -2947,7 +2981,41 @@ ShellRoot {
                   // Click the home sky to flip light/dark by hand.
                   TapHandler {
                     enabled: cityItem.modelData.home === true
-                    onTapped: root.setTheme(!root.lightMode)
+                    // Not when the click landed on the ☀ ☾ ◌ picker beside it.
+                    onTapped: (eventPoint) => {
+                      var p = modePicker.mapFromItem(cityItem, eventPoint.position);
+                      if (!modePicker.contains(p)) root.setTheme(!root.lightMode);
+                    }
+                  }
+
+                  // The three looks side by side, the current one lit: ☀ Solarized
+                  // Light, ☾ Solarized Dark, ◌ Glass. Click one to switch.
+                  Row {
+                    id: modePicker
+                    visible: cityItem.modelData.home === true
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 4
+                    Repeater {
+                      model: [
+                        { mode: "light", glyph: "☀", tip: "Solarized Light" },
+                        { mode: "dark",  glyph: "☾", tip: "Solarized Dark" },
+                        { mode: "glass", glyph: "◌", tip: "Glass: see-through, blurred" }
+                      ]
+                      Text {
+                        required property var modelData
+                        readonly property bool current: root.themeMode === modelData.mode
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: modelData.glyph
+                        color: current ? root.c.cyan : modeHover.hovered ? root.c.dim : root.c.muted
+                        font.pixelSize: 12
+                        font.bold: current
+                        HoverHandler { id: modeHover }
+                        TapHandler {
+                          onTapped: modelData.mode === "glass" ? root.setGlass()
+                                                               : root.setTheme(modelData.mode === "light")
+                        }
+                      }
+                    }
                   }
 
                   // Divider after home, so the local sky reads separately from the world clocks.

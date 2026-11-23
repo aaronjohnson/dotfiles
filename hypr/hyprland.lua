@@ -617,6 +617,17 @@ hl.window_rule({
     no_focus = true,
 })
 
+-- Glass (◌ in the bar): blur behind the bar (quickshell) and tofi (launcher). Off
+-- until bin/theme-glass switches it on with hyprctl eval, so the solid looks cost no
+-- blur. A global so that eval can reach it; a config reload turns it off again.
+GlassLayers = hl.layer_rule({
+    name         = "glass-layers",
+    match        = { namespace = "^(quickshell|launcher)$" },
+    blur         = true,
+    ignore_alpha = 0.05,   -- only blur where something is drawn, not the clear corners
+    enabled      = false,
+})
+
 -- Layer rules also return a handle.
 -- local overlayLayerRule = hl.layer_rule({
 --     name  = "no-anim-overlay",

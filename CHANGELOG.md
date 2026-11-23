@@ -5,6 +5,18 @@ a new jar on the shelf when something arrives, a recipe refined when something
 that was already there tastes better, a blend adjusted when the balance shifts.
 *Rasa* is Sanskrit for flavour, or essence; this is where it is written down.
 
+## Glass · 23 November 2026 · a third jar beside the two Solarizeds
+
+- **A third look, for the mood.** Beside the VAN sky on the bar sit ☀ ☾ ◌:
+  Solarized Light, Solarized Dark and Glass, the current one lit; click to switch
+  (or `qs ipc call theme glass`). Glass is Solarized Dark with the background let
+  go: the bar and tofi turn mostly clear and Hyprland blurs what's behind them,
+  kitty drops to 0.6 opacity, and the text goes a step brighter so it holds over
+  the wallpaper. Sunrise and sunset leave Glass alone; ☀ or ☾ ends it.
+- **Blur only when it's wanted.** The blur behind the bar and tofi is a layer rule
+  that stays off in the solid looks. `bin/theme-glass` switches it, deepens the
+  frost a little, and reaches running kitty windows over a socket each one now opens.
+
 ## Knowing where you are · 1 November 2026 · a clock on the wall
 
 - **The deck tells the time.** A tab on its top edge shows the local time, the date

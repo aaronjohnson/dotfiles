@@ -1,5 +1,5 @@
 # tofi: the app launcher on Super + R (runs tofi-drun).
-# Colours: solarized-light.conf / solarized-dark.conf, picked by launch.sh to match
+# Colours: solarized-light.conf / solarized-dark.conf / solarized-glass.conf, picked by launch.sh to match
 # the system light/dark setting (which the Quickshell bar flips at sunrise/sunset).
 # Type to filter, arrows or Ctrl+N/P to move, Enter to launch, Esc to close.
 

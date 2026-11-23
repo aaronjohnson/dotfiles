@@ -6,7 +6,9 @@ The system itself (packages, hibernation, Japanese input, the NPU driver) lives 
 
 Everything follows one light/dark switch: the Quickshell bar flips it at local
 sunrise and sunset (Solarized Light by day, Solarized Dark by night), and kitty,
-tofi, mako, GTK apps and Emacs follow.
+tofi, mako, GTK apps and Emacs follow. A third look, Glass, waits beside the VAN sky
+(☀ ☾ ◌): Solarized Dark with see-through, blurred backgrounds behind solid text,
+kept until you pick ☀ or ☾ again.
 
 | Folder | What it is |
 |---|---|
@@ -17,7 +19,7 @@ tofi, mako, GTK apps and Emacs follow.
 | `yazi/` | Terminal file manager on Super+E, opening files in Emacs |
 | `mako/` | Notifications that age out and group repeats |
 | `fcitx5/` | Japanese input (Anthy): 半角/全角 toggles, 変換/無変換 on/off |
-| `bin/` | Scripts: `hud` (the bar's stats as a terminal UI with polar dials), `usbc-power` (USB-C charger report), `land` (Super+F12: commit drafted messages, push and bump ~/nixos, switch through polkit), `auto-brightness` (screen follows the light sensor; Hyprland starts it, Super+F8 toggles) |
+| `bin/` | Scripts: `hud` (the bar's stats as a terminal UI with polar dials), `usbc-power` (USB-C charger report), `land` (Super+F12: commit drafted messages, push and bump ~/nixos, switch through polkit), `auto-brightness` (screen follows the light sensor; Hyprland starts it, Super+F8 toggles), `theme-glass` (the see-through half of the Glass look) |
 | `bash/` | `bashrc`: `~/dotfiles/bin` on PATH; on the text console, the desktop clipboard via `wl-paste` (Ctrl+V at the prompt) |
 | `just/` | `~/justfile`: `just otr` (`bin/otr`) a tofi menu of old-time radio shows, then an unheard episode streamed from the Internet Archive and saved to `~/Music/radio` as it plays (`just history`: what you heard when; `just again 20`: the last one from minute 20; `just next`, `just queue SHOW WORD`); `just wotw` the saved 1938 War of the Worlds; `just stop` |
 | `emacs/` | `init.el`: Wayland clipboard from the terminal, Solarized that follows the switch, nix-mode |

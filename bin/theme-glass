@@ -1,0 +1,37 @@
+#!/bin/sh
+# theme-glass on|off: the see-through half of the bar's Glass look (☀ ☾ ◌ by the VAN sky).
+# The bar calls this every time the theme changes; it's safe to run again and again.
+#
+#   kitty    open windows go to 0.6 opacity (back to kitty.conf's 0.88 when off);
+#            new windows read ~/.local/state/theme/kitty.conf through globinclude
+#   Hyprland blurs behind the bar and tofi (layer rule GlassLayers in hyprland.lua)
+#            and frosts a little deeper while glass is on
+#   tofi     tofi/launch.sh reads ~/.local/state/theme/mode and picks solarized-glass.conf
+#
+# Colours (Solarized Dark) are set by the bar through the usual color-scheme switch.
+state="${XDG_STATE_HOME:-$HOME/.local/state}/theme"
+mkdir -p "$state"
+
+case "$1" in
+  on)  mode=glass; opacity=0.6;     blur_on=true;  size=9; passes=3 ;;
+  off) mode=solid; opacity=default; blur_on=false; size=7; passes=2 ;;
+  *)   echo "usage: theme-glass on|off" >&2; exit 2 ;;
+esac
+
+echo "$mode" > "$state/mode"
+if [ "$mode" = glass ]; then
+  echo "background_opacity $opacity" > "$state/kitty.conf"
+else
+  : > "$state/kitty.conf"
+fi
+
+# Every running kitty listens on an abstract socket @kitty-PID (kitty.conf listen_on).
+grep -o '@kitty-[0-9]*' /proc/net/unix 2>/dev/null | sort -u | while read -r sock; do
+  kitty @ --to "unix:$sock" set-background-opacity --all "$opacity" >/dev/null 2>&1
+done
+
+if command -v hyprctl >/dev/null 2>&1; then
+  hyprctl eval "if GlassLayers then GlassLayers:set_enabled($blur_on) end;
+    hl.config({ decoration = { blur = { size = $size, passes = $passes } } })" >/dev/null 2>&1
+fi
+exit 0
